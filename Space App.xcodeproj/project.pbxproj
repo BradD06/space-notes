@@ -256,10 +256,12 @@
 				DEVELOPMENT_TEAM = M42RPS3M35;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Space App/Space/Space/Space-macOS.entitlements";
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Space;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Виджеты из ваших заметок (например, «Плеер») управляют приложениями «Музыка» и Spotify: показывают трек, ставят на паузу и переключают песни.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -297,10 +299,12 @@
 				DEVELOPMENT_TEAM = M42RPS3M35;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Space App/Space/Space/Space-macOS.entitlements";
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Space;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Виджеты из ваших заметок (например, «Плеер») управляют приложениями «Музыка» и Spotify: показывают трек, ставят на паузу и переключают песни.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

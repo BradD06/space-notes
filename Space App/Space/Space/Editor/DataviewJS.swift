@@ -209,6 +209,8 @@ struct DataviewJSView: PlatformWebViewRepresentable {
                 "vaultName": parent.vault.vaultName,
                 "recent": Array(parent.vault.backStack.compactMap { s -> String? in if case .note(let id) = s { id } else { nil } }.reversed().prefix(10)),
             ]
+            p["tmpdir"] = (NSTemporaryDirectory() as NSString).standardizingPath
+            p["homedir"] = NSHomeDirectory()
             #if os(iOS)
             p["isMobile"] = true
             #else
@@ -316,6 +318,20 @@ struct DataviewJSView: PlatformWebViewRepresentable {
                 return (true, nil)
             case "http":
                 return (await http(body), nil)
+            case "osascript":
+                guard let source = body["source"] as? String else { return (nil, "no script") }
+                let widget = parent.noteID ?? "?"
+                let title = parent.noteID.map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension } ?? "Виджет"
+                return (WidgetAccess.runAppleScript(source, widget: widget, widgetTitle: title), nil)
+            case "notifyPermission":
+                return (await WidgetAccess.requestNotifications(), nil)
+            case "notify":
+                await WidgetAccess.notify(title: (body["title"] as? String) ?? "Space", body: (body["body"] as? String) ?? "", silent: (body["silent"] as? Bool) ?? false)
+                return (true, nil)
+            case "fsWrite":
+                // Node's fs for widgets: the app's temporary folder only.
+                guard let p = body["path"] as? String, WidgetAccess.isTemporary(p), let b64 = body["base64"] as? String, let data = Data(base64Encoded: b64) else { return (false, nil) }
+                return ((try? data.write(to: URL(fileURLWithPath: p))) != nil, nil)
             default:
                 return (nil, "unknown op \(op)")
             }

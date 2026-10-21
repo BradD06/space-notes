@@ -658,10 +658,126 @@ async function requestUrl(req) {
   return out;
 }
 const obsidianModule = { requestUrl, request: async (r) => (await requestUrl(r)).text, Notice, moment: undefined, Platform: { isMobile: !!S.isMobile, isDesktop: !S.isMobile, isMacOS: !S.isMobile, isIosApp: !!S.isMobile } };
-window.require = (name) => {
-  if (name === "obsidian") return obsidianModule;
-  throw new Error(`Модуль «${name}» недоступен в Space: виджет написан для настольного Obsidian.`);
+// Node's modules, as far as widgets need them on a Mac. Space runs AppleScript itself (after asking you),
+// fs reaches only the app's temporary folder, and nothing else from Node is there.
+class Buffer extends Uint8Array {
+  static from(x, enc) {
+    if (typeof x === "string") {
+      if (enc === "base64") { const s = atob(x); const b = new Buffer(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; }
+      const u = new TextEncoder().encode(x); const b = new Buffer(u.length); b.set(u); return b;
+    }
+    const u = x instanceof ArrayBuffer ? new Uint8Array(x) : Uint8Array.from(x); const b = new Buffer(u.length); b.set(u); return b;
+  }
+  static isBuffer(x) { return x instanceof Buffer; }
+  static concat(list) { const n = list.reduce((a, b) => a + b.length, 0); const out = new Buffer(n); let o = 0; for (const b of list) { out.set(b, o); o += b.length; } return out; }
+  toString(enc) {
+    if (enc === "base64") return bufferToBase64(this);
+    if (enc === "hex") return Array.from(this, (x) => x.toString(16).padStart(2, "0")).join("");
+    return new TextDecoder().decode(this);
+  }
+}
+window.Buffer = Buffer;
+const nodeError = (name) => new Error(`Модуль «${name}» недоступен в Space: виджет написан для настольного Obsidian.`);
+const tmpFiles = new Map();
+const pathModule = {
+  sep: "/",
+  join: (...p) => p.filter((x) => x !== "").join("/").replace(/\/+/g, "/"),
+  resolve: (...p) => pathModule.join(...p),
+  basename: (p, ext) => { const b = String(p).split("/").pop(); return ext && b.endsWith(ext) ? b.slice(0, -ext.length) : b; },
+  dirname: (p) => String(p).split("/").slice(0, -1).join("/") || "/",
+  extname: (p) => { const b = String(p).split("/").pop(); const i = b.lastIndexOf("."); return i > 0 ? b.slice(i) : ""; },
 };
+const osModule = { tmpdir: () => S.tmpdir || "/tmp", homedir: () => S.homedir || "", platform: () => (S.isMobile ? "ios" : "darwin"), EOL: "\n", hostname: () => "space" };
+const enoent = (p) => Object.assign(new Error(`ENOENT: no such file, ${p}`), { code: "ENOENT" });
+const fsModule = {
+  existsSync: (p) => tmpFiles.has(String(p)),
+  readFileSync(p, enc) {
+    const b = tmpFiles.get(String(p)); if (!b) throw enoent(p);
+    const e = typeof enc === "string" ? enc : enc && enc.encoding;
+    return e ? b.toString(e) : b;
+  },
+  writeFileSync(p, data) {
+    const b = typeof data === "string" ? Buffer.from(data) : Buffer.from(data);
+    tmpFiles.set(String(p), b);
+    native("fsWrite", { path: String(p), base64: b.toString("base64") });
+  },
+  unlinkSync: (p) => { tmpFiles.delete(String(p)); },
+  mkdirSync: () => {},
+  readFile(p, a, b) { const cb = typeof a === "function" ? a : b; try { cb(null, fsModule.readFileSync(p, typeof a === "function" ? undefined : a)); } catch (e) { cb(e); } },
+  writeFile(p, d, a, b) { const cb = typeof a === "function" ? a : b; fsModule.writeFileSync(p, d); cb && cb(null); },
+};
+fsModule.promises = { readFile: async (p, e) => fsModule.readFileSync(p, e), writeFile: async (p, d) => fsModule.writeFileSync(p, d) };
+
+// child_process: only `osascript -e …`, run by Space as AppleScript.
+async function runOsa(args) {
+  const parts = [];
+  for (let i = 0; i < args.length; i++) if (args[i] === "-e" && i + 1 < args.length) parts.push(args[++i]);
+  const r = await native("osascript", { source: parts.join("\n") });
+  if (r && r.files) for (const [p, b64] of Object.entries(r.files)) tmpFiles.set(p, Buffer.from(b64, "base64"));
+  if (!r || r.error) throw new Error((r && r.error) || "AppleScript не выполнился");
+  return String(r.out ?? "") + "\n";
+}
+function fakeProcess() {
+  const handlers = {}; const stdout = { on: (e, f) => ((handlers["out:" + e] = f), stdout) }; const stderr = { on: (e, f) => ((handlers["err:" + e] = f), stderr) };
+  const proc = { stdout, stderr, on: (e, f) => ((handlers[e] = f), proc), kill: () => {}, pid: 0 };
+  return { proc, handlers };
+}
+const childProcess = {
+  execFile(cmd, args, opts, cb) {
+    if (typeof args === "function") { cb = args; args = []; } else if (typeof opts === "function") { cb = opts; }
+    const { proc, handlers } = fakeProcess();
+    const done = (e, out) => { cb && cb(e, out ?? "", e ? String(e.message) : ""); handlers.close && handlers.close(e ? 1 : 0); handlers.exit && handlers.exit(e ? 1 : 0); };
+    if (String(cmd).split("/").pop() !== "osascript") setTimeout(() => done(new Error(`Команда «${cmd}» недоступна в Space: можно только osascript.`)));
+    else runOsa(args || []).then((out) => done(null, out), (e) => done(e));
+    return proc;
+  },
+  exec(command, opts, cb) {
+    if (typeof opts === "function") cb = opts;
+    const m = String(command).match(/^\s*(?:\/usr\/bin\/)?osascript\s+-e\s+(['"])([\s\S]*)\1\s*$/);
+    return childProcess.execFile(m ? "osascript" : command, m ? ["-e", m[2]] : [], cb);
+  },
+  spawn(cmd, args) {
+    const { proc, handlers } = fakeProcess();
+    const done = (e, out) => { if (out && handlers["out:data"]) handlers["out:data"](Buffer.from(out)); if (e && handlers["err:data"]) handlers["err:data"](Buffer.from(String(e.message))); if (e && handlers.error) handlers.error(e); handlers.close && handlers.close(e ? 1 : 0); handlers.exit && handlers.exit(e ? 1 : 0); };
+    if (String(cmd).split("/").pop() !== "osascript") setTimeout(() => done(new Error(`Команда «${cmd}» недоступна в Space: можно только osascript.`)));
+    else runOsa(args || []).then((out) => done(null, out), (e) => done(e));
+    return proc;
+  },
+};
+childProcess.execFileSync = () => { throw new Error("Синхронный запуск команд недоступен в Space."); };
+childProcess.execSync = childProcess.execFileSync;
+
+// https.get / http.get through requestUrl
+function httpGet(url, opts, cb) {
+  if (typeof opts === "function") cb = opts;
+  const u = typeof url === "string" ? url : url.href || `${url.protocol || "https:"}//${url.hostname || url.host}${url.path || "/"}`;
+  const reqHandlers = {};
+  const req = { on: (e, f) => ((reqHandlers[e] = f), req), end: () => req, setTimeout: () => req, destroy: () => {}, abort: () => {} };
+  requestUrl({ url: u, throw: false }).then((r) => {
+    const resHandlers = {}; let enc = null;
+    const res = { statusCode: r.status, headers: r.headers || {}, on: (e, f) => ((resHandlers[e] = f), res), setEncoding: (e) => { enc = e; }, resume: () => {} };
+    cb && cb(res);
+    setTimeout(() => { const b = Buffer.from(r.arrayBuffer); resHandlers.data && resHandlers.data(enc ? b.toString(enc) : b); resHandlers.end && resHandlers.end(); });
+  }, (e) => reqHandlers.error && reqHandlers.error(e));
+  return req;
+}
+const httpsModule = { get: httpGet, request: (u, o, cb) => httpGet(u, o, cb) };
+
+const nodeModules = { obsidian: obsidianModule, child_process: childProcess, fs: fsModule, os: osModule, path: pathModule, https: httpsModule, http: httpsModule };
+window.require = (name) => {
+  const m = nodeModules[String(name).replace(/^node:/, "")];
+  if (m) return m;
+  throw nodeError(name);
+};
+
+// System notifications (the web API WebKit doesn't have on the Mac), through Space after the system asks.
+class SpaceNotification {
+  constructor(title, o = {}) { native("notify", { title: String(title), body: String(o.body || ""), silent: !!o.silent }); }
+  static permission = "default";
+  static async requestPermission() { SpaceNotification.permission = await native("notifyPermission"); return SpaceNotification.permission; }
+  close() {}
+}
+window.Notification = SpaceNotification;
 
 // ── dv ──────────────────────────────────────────────────────────────────────────────────────────────
 const root = document.getElementById("space-root");
