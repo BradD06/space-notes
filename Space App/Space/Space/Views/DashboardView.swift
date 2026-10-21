@@ -21,7 +21,6 @@ struct DashboardView: View {
                 .overlay(alignment: .topTrailing) { tools }
                 .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 4)
             overview
-            DashboardWidgets()
             if let url = profile.dashboardURL {
                 NoteView(noteID: "dashboard", file: url).id(url)
             }
