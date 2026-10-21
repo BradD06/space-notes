@@ -98,8 +98,28 @@ enum DropZone: Equatable {
 @Observable
 final class Workspace {
     private(set) var root: PaneNode
-    private(set) var focusedID: UUID
+    private(set) var focusedID: UUID {
+        didSet { if let p = find(focusedID), dock(of: p) == nil { lastMainID = focusedID } }
+    }
+    /// The main-area pane focused last: things picked elsewhere open there, never in a dock.
+    @ObservationIgnored private var lastMainID: UUID?
+    private var mainPane: PaneNode? {
+        if let f = focused, dock(of: f) == nil { return f }
+        return lastMainID.flatMap { Self.find($0, in: root) } ?? Self.firstPane(in: root)
+    }
     private let saveKey = "space.workspace"
+
+    /// Side docks, like Obsidian's sidebars: their own panes (split top to bottom) next to the main area —
+    /// the right one beside the panes, the left one under the folders. nil until something is put there.
+    enum Dock: String, CaseIterable { case left, right }
+    private(set) var docks: [Dock: PaneNode] = [:]
+    var dockOpen: [Dock: Bool] = [.left: true, .right: true] { didSet { saveDocks() } }
+    /// The right dock's width; the left dock's height (under the folders).
+    var dockSize: [Dock: CGFloat] = [.left: 260, .right: 340] { didSet { saveDocks() } }
+    /// Every tree of panes: the main area and the docks.
+    var roots: [PaneNode] { [root] + Dock.allCases.compactMap { docks[$0] } }
+    /// Stand-in pane ids for an empty dock's drop strip (shown while dragging).
+    static let dockDropID: [Dock: UUID] = [.left: UUID(), .right: UUID()]
 
     init() {
         let pane = PaneNode(tabs: [.dashboard])
@@ -109,6 +129,7 @@ final class Workspace {
             root = restored
             focusedID = Self.firstPane(in: restored)?.id ?? restored.id
         }
+        loadDocks()
         startOnDashboard()
     }
 
@@ -122,7 +143,17 @@ final class Workspace {
         save()
     }
 
-    var focused: PaneNode? { Self.find(focusedID, in: root) }
+    var focused: PaneNode? { find(focusedID) }
+
+    /// The pane with this id in the main area or a dock.
+    func find(_ id: UUID) -> PaneNode? { roots.lazy.compactMap { Self.find(id, in: $0) }.first }
+
+    /// The dock a node sits in (nil for the main area).
+    func dock(of node: PaneNode) -> Dock? {
+        var top = node
+        while let p = top.parent { top = p }
+        return Dock.allCases.first { docks[$0] === top }
+    }
     /// How many panes are open (the focused one is only outlined when there's more than one).
     var paneCount: Int { Self.count(root) }
     private static func count(_ n: PaneNode) -> Int { n.isPane ? 1 : n.children.reduce(0) { $0 + count($1) } }
@@ -132,7 +163,10 @@ final class Workspace {
     /// Something was picked elsewhere (sidebar, map, links): show it in the focused pane —
     /// switch to its tab if it is already open there, otherwise replace the current tab (like Obsidian).
     func show(_ selection: VaultStore.Selection?) {
-        guard let tab = WorkTab(selection), let pane = focused ?? Self.firstPane(in: root) else { return }
+        guard let tab = WorkTab(selection) else { return }
+        // A click in a dock's pane shows that pane's own tab: nothing to open in the main area.
+        if let f = focused, dock(of: f) != nil, f.activeTab == tab { return }
+        guard let pane = mainPane else { return }
         if pane.activeTab == tab { return }
         if let i = pane.tabs.firstIndex(of: tab) { pane.active = i }
         else if pane.tabs.isEmpty { pane.tabs = [tab]; pane.active = 0 }
@@ -148,7 +182,7 @@ final class Workspace {
             guard found == nil else { return }
             if n.isPane { if let i = n.tabs.firstIndex(of: tab) { found = (n, i) } } else { n.children.forEach(walk) }
         }
-        walk(root)
+        roots.forEach(walk)
         guard let hit = found else { return false }
         let pane = hit.0
         pane.active = hit.1
@@ -161,7 +195,7 @@ final class Workspace {
     func notePane(besides paneID: UUID?) -> PaneNode? {
         var panes: [PaneNode] = []
         func walk(_ n: PaneNode) { if n.isPane { panes.append(n) } else { n.children.forEach(walk) } }
-        walk(root)
+        roots.forEach(walk)
         return panes.first { p in
             guard p.id != paneID, case .note(let id)? = p.activeTab else { return false }
             return Documents.isNote(id)
@@ -169,14 +203,14 @@ final class Workspace {
     }
 
     func openInNewTab(_ tab: WorkTab) {
-        guard let pane = focused ?? Self.firstPane(in: root) else { return }
+        guard let pane = mainPane else { return }
         pane.tabs.insert(tab, at: min(pane.active + 1, pane.tabs.count))
         pane.active = min(pane.active + 1, pane.tabs.count - 1)
         save()
     }
 
     func openToTheSide(_ tab: WorkTab) {
-        guard let pane = focused ?? Self.firstPane(in: root) else { return }
+        guard let pane = mainPane else { return }
         let new = PaneNode(tabs: [tab])
         split(pane, with: new, zone: .right)
         focusedID = new.id
@@ -186,7 +220,7 @@ final class Workspace {
     func focus(_ pane: PaneNode) { if focusedID != pane.id { focusedID = pane.id } }
 
     func focus(id: UUID?) {
-        if let id, focusedID != id, Self.find(id, in: root) != nil { focusedID = id }
+        if let id, focusedID != id, find(id) != nil { focusedID = id }
     }
 
     func activate(_ pane: PaneNode, _ index: Int) {
@@ -200,6 +234,7 @@ final class Workspace {
         pane.tabs.remove(at: index)
         if pane.tabs.isEmpty {
             if pane === root { pane.tabs = [.map]; pane.active = 0 }
+            else if let d = Dock.allCases.first(where: { docks[$0] === pane }) { closeDock(d) }
             else { remove(pane) }
         } else {
             pane.active = min(pane.active, pane.tabs.count - 1)
@@ -269,7 +304,18 @@ final class Workspace {
             onMoveToFolder?(d.payload, folder)
             return
         }
-        guard let t = d.target, let pane = Self.find(t.pane, in: root) else { return }
+        guard let t = d.target else { return }
+        if let dock = Dock.allCases.first(where: { Self.dockDropID[$0] == t.pane }) {
+            // Onto an empty dock's strip: the dock appears with this tab.
+            let pane = PaneNode(tabs: [])
+            docks[dock] = pane
+            dockOpen[dock] = true
+            drop(d.payload, on: pane, zone: .center)
+            if pane.tabs.isEmpty { docks[dock] = nil }
+            saveDocks()
+            return
+        }
+        guard let pane = find(t.pane) else { return }
         drop(d.payload, on: pane, zone: t.zone, at: t.index)
     }
 
@@ -298,17 +344,23 @@ final class Workspace {
                 }
             } else { n.children.forEach(walk) }
         }
-        walk(root)
+        roots.forEach(walk)
         save()
     }
 
+    /// Where empty docks can take a dragged tab (strips the views show only during a drag).
+    @ObservationIgnored var dockDropFrames: [Dock: CGRect] = [:]
+
     private func target(at p: CGPoint) -> DropTarget? {
-        for (id, f) in barFrames where f.contains(p) {
+        for (dock, f) in dockDropFrames where docks[dock] == nil && f.contains(p) {
+            return DropTarget(pane: Self.dockDropID[dock]!, zone: .center, index: nil)
+        }
+        for (id, f) in barFrames where f.contains(p) && find(id) != nil {
             let chips = (chipFrames[id] ?? [:]).sorted { $0.key < $1.key }
             let index = chips.first(where: { p.x < $0.value.midX })?.key ?? chips.count
             return DropTarget(pane: id, zone: .center, index: index)
         }
-        for (id, f) in paneFrames where f.contains(p) {
+        for (id, f) in paneFrames where f.contains(p) && find(id) != nil {
             return DropTarget(pane: id, zone: DropZone.at(CGPoint(x: p.x - f.minX, y: p.y - f.minY), in: f.size), index: nil)
         }
         return nil
@@ -326,7 +378,7 @@ final class Workspace {
         var source: (PaneNode, Int)?
         let parts = payload.split(separator: "|", maxSplits: 2).map(String.init)
         if parts.count == 3, parts[0] == "tab", let pid = UUID(uuidString: parts[1]), let i = Int(parts[2]),
-           let pane = Self.find(pid, in: root), pane.tabs.indices.contains(i) {
+           let pane = find(pid), pane.tabs.indices.contains(i) {
             tab = pane.tabs[i]
             source = (pane, i)
         } else {
@@ -346,7 +398,11 @@ final class Workspace {
             pane.tabs.remove(at: i)
             if pane === target, let j = insertAt, j > i { insertAt = j - 1 }
             pane.active = min(pane.active, max(pane.tabs.count - 1, 0))
-            if pane.tabs.isEmpty, pane !== target { remove(pane) }
+            if pane.tabs.isEmpty, pane !== target {
+                if pane === root { pane.tabs = [.map]; pane.active = 0 }
+                else if let d = Dock.allCases.first(where: { docks[$0] === pane }) { docks[d] = nil; saveDocks() }
+                else { remove(pane) }
+            }
         }
 
         if zone == .center {
@@ -384,8 +440,7 @@ final class Workspace {
             parent.children[index] = split
             split.parent = parent
         } else {
-            root = split
-            split.parent = nil
+            replaceTop(target, with: split)
         }
     }
 
@@ -398,6 +453,7 @@ final class Workspace {
         let total = parent.fractions.reduce(0, +)
         if total > 0 { parent.fractions = parent.fractions.map { $0 + freed * $0 / total } }
         if focusedID == pane.id { focusedID = Self.firstPane(in: parent)?.id ?? root.id }
+        defer { saveDocks() }
         if parent.children.count == 1 {
             // A split with one child is just that child.
             let only = parent.children[0]
@@ -413,8 +469,7 @@ final class Workspace {
                     for c in only.children { c.parent = grand }
                 }
             } else {
-                root = only
-                only.parent = nil
+                replaceTop(parent, with: only)
             }
         }
     }
@@ -428,7 +483,71 @@ final class Workspace {
         node.fractions[i + 1] = b
     }
 
-    func endResize() { save() }
+    func endResize() { save(); saveDocks() }
+
+    /// A tree's top node changed (split or collapsed): in the main area or in its dock.
+    private func replaceTop(_ old: PaneNode, with new: PaneNode) {
+        new.parent = nil
+        if let d = Dock.allCases.first(where: { docks[$0] === old }) { docks[d] = new } else { root = new }
+    }
+
+    // MARK: Docks
+
+    /// Puts a tab into a dock (its first pane), opening the dock; from the pane it was in, if given.
+    func moveToDock(_ dock: Dock, tab: WorkTab, from pane: PaneNode? = nil, index: Int? = nil) {
+        let payload = pane.flatMap { p in index.map { Self.payload(pane: p, index: $0) } } ?? tab.token
+        if let existing = docks[dock], let first = Self.firstPane(in: existing) {
+            drop(payload, on: first, zone: .center)
+        } else {
+            let new = PaneNode(tabs: [])
+            docks[dock] = new
+            drop(payload, on: new, zone: .center)
+            if new.tabs.isEmpty { docks[dock] = nil }
+        }
+        dockOpen[dock] = true
+        saveDocks()
+    }
+
+    func closeDock(_ dock: Dock) {
+        if let d = docks[dock], find(focusedID).map({ self.dock(of: $0) == dock }) == true {
+            _ = d
+            focusedID = Self.firstPane(in: root)?.id ?? root.id
+        }
+        docks[dock] = nil
+        saveDocks()
+    }
+
+    private var dockKey: String { saveKey + ".docks" }
+
+    private struct SavedDocks: Codable {
+        var trees: [String: Saved] = [:]
+        var open: [String: Bool] = [:]
+        var size: [String: Double] = [:]
+    }
+
+    @ObservationIgnored private var loadingDocks = false
+
+    func saveDocks() {
+        guard !loadingDocks else { return }
+        var s = SavedDocks()
+        for d in Dock.allCases {
+            if let t = docks[d] { s.trees[d.rawValue] = encode(t) }
+            s.open[d.rawValue] = dockOpen[d] ?? true
+            s.size[d.rawValue] = Double(dockSize[d] ?? 300)
+        }
+        if let data = try? JSONEncoder().encode(s) { UserDefaults.standard.set(data, forKey: dockKey) }
+    }
+
+    private func loadDocks() {
+        guard let data = UserDefaults.standard.data(forKey: dockKey), let s = try? JSONDecoder().decode(SavedDocks.self, from: data) else { return }
+        loadingDocks = true
+        defer { loadingDocks = false }
+        for d in Dock.allCases {
+            if let t = s.trees[d.rawValue] { docks[d] = Self.decode(t) }
+            if let o = s.open[d.rawValue] { dockOpen[d] = o }
+            if let z = s.size[d.rawValue] { dockSize[d] = CGFloat(z) }
+        }
+    }
 
     // MARK: Lookup
 
@@ -442,7 +561,7 @@ final class Workspace {
     func noteNextTo(_ paneID: UUID?) -> String? {
         var panes: [PaneNode] = []
         func walk(_ n: PaneNode) { if n.isPane { panes.append(n) } else { n.children.forEach(walk) } }
-        walk(root)
+        roots.forEach(walk)
         // The focused pane first (when it isn't the book's own), then the others.
         if let i = panes.firstIndex(where: { $0.id == focusedID }) { panes.insert(panes.remove(at: i), at: 0) }
         for p in panes where p.id != paneID {
@@ -469,7 +588,8 @@ final class Workspace {
             }
             n.children.forEach(walk)
         }
-        walk(root)
+        roots.forEach(walk)
+        saveDocks()
     }
 
     // MARK: Saving

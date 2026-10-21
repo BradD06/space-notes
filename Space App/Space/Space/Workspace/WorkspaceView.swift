@@ -11,10 +11,97 @@ struct WorkspaceView: View {
     @Environment(Workspace.self) private var workspace
 
     var body: some View {
-        NodeView(node: workspace.root)
-            .onPreferenceChange(PaneFrames.self) { workspace.paneFrames = $0 }
-            .onPreferenceChange(BarFrames.self) { workspace.barFrames = $0 }
-            .onPreferenceChange(ChipFrames.self) { workspace.chipFrames = $0 }
+        PaneTree(node: workspace.root)
+    }
+}
+
+/// Notes shown in a side dock read like pages: no location line and big title, less margin.
+extension EnvironmentValues {
+    @Entry var inDock = false
+}
+
+/// A tree of panes (the main area's or a dock's), reporting where its panes and tab bars are for dragging.
+/// Frames from all trees are merged: each tree only knows its own.
+struct PaneTree: View {
+    let node: PaneNode
+    @Environment(Workspace.self) private var workspace
+
+    var body: some View {
+        NodeView(node: node)
+            .onPreferenceChange(PaneFrames.self) { workspace.paneFrames.merge($0) { $1 } }
+            .onPreferenceChange(BarFrames.self) { workspace.barFrames.merge($0) { $1 } }
+            .onPreferenceChange(ChipFrames.self) { workspace.chipFrames.merge($0) { $1 } }
+    }
+}
+
+/// A side dock: its panes, or (while a tab is dragged and the dock is empty) a strip to drop it on.
+struct DockArea: View {
+    let dock: Workspace.Dock
+    @Environment(Workspace.self) private var workspace
+
+    var body: some View {
+        if let tree = workspace.docks[dock] {
+            PaneTree(node: tree).environment(\.inDock, true)
+        }
+    }
+}
+
+/// The edge of a dock you grab to make it wider or narrower (horizontal) or taller (vertical).
+struct DockResizeHandle: View {
+    var vertical = false
+    let onDrag: (CGFloat) -> Void
+    @State private var last: CGFloat = 0
+    @State private var hover = false
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Capsule().fill(Theme.accent.opacity(hover ? 0.6 : 0))
+                .frame(width: vertical ? 40 : 3, height: vertical ? 3 : 40)
+        }
+        .frame(width: vertical ? nil : 6, height: vertical ? 6 : nil)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hover = inside
+            #if os(macOS)
+            if inside { (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push() } else { NSCursor.pop() }
+            #endif
+        }
+        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { v in
+                let now = vertical ? v.translation.height : v.translation.width
+                onDrag(now - last)
+                last = now
+            }
+            .onEnded { _ in last = 0 })
+    }
+}
+
+/// Shown at a window edge while dragging, when that dock is empty: drop a tab here to open it in the dock.
+struct DockDropStrip: View {
+    let dock: Workspace.Dock
+    @Environment(Workspace.self) private var workspace
+
+    var body: some View {
+        let over = workspace.drag?.target?.pane == Workspace.dockDropID[dock]
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(Theme.accent.opacity(over ? 0.22 : 0.08))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Theme.accent.opacity(over ? 0.8 : 0.35), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+            .overlay {
+                Label(dock == .right ? "Правая панель" : "Нижняя панель", systemImage: dock == .right ? "sidebar.right" : "rectangle.bottomhalf.inset.filled")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Theme.accent)
+                    .rotationEffect(.degrees(dock == .right ? 90 : 0))
+                    .fixedSize()
+            }
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { workspace.dockDropFrames[dock] = g.frame(in: .global) }
+                    .onChange(of: g.frame(in: .global)) { _, f in workspace.dockDropFrames[dock] = f }
+                    .onDisappear { workspace.dockDropFrames[dock] = nil }
+            })
+            .allowsHitTesting(false)
     }
 }
 
@@ -229,6 +316,22 @@ private struct TabBar: View {
                         } onClose: {
                             workspace.close(pane, i)
                             if let t = pane.activeTab, workspace.focusedID == pane.id { vault.selection = t.selection }
+                        }
+                        .contextMenu {
+                            let here = workspace.dock(of: pane)
+                            if here != .right {
+                                Button("В правую панель", systemImage: "sidebar.right") { workspace.moveToDock(.right, tab: tab, from: pane, index: i) }
+                            }
+                            if here != .left {
+                                Button("В левую панель, под папки", systemImage: "sidebar.left") { workspace.moveToDock(.left, tab: tab, from: pane, index: i) }
+                            }
+                            if here != nil {
+                                Button("В основную область", systemImage: "rectangle") {
+                                    if let main = Workspace.firstPane(in: workspace.root) {
+                                        workspace.drop(Workspace.payload(pane: pane, index: i), on: main, zone: .center)
+                                    }
+                                }
+                            }
                         }
                         // Drag the tab anywhere: onto another tab bar, into a pane, or onto a pane's side.
                         .simultaneousGesture(DragGesture(minimumDistance: 6, coordinateSpace: .global)

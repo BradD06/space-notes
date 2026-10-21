@@ -52,6 +52,7 @@ struct MainView: View {
             // Without a title strip (a zoomed window) keep the same room above the panes for the vault's name.
             .padding(.top, titleStrip < 10 ? 30 : 0)
             .clipped()                           // the map and notes stay inside their own area
+            rightDock
         }
         .padding(.horizontal, 8)
         .background(WindowButtons(sidebarWidth: compactSidebar ? 78 : 270, compact: compactSidebar))
@@ -76,6 +77,27 @@ struct MainView: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
+        .overlay(alignment: .topTrailing) {
+            // Shows / hides the right dock (once something was put there).
+            if workspace.docks[.right] != nil {
+                Button {
+                    withAnimation(.smooth(duration: 0.3)) { workspace.dockOpen[.right] = !(workspace.dockOpen[.right] ?? true) }
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(workspace.dockOpen[.right] == true ? Theme.ink : Theme.muted)
+                        .frame(width: 28, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .tip(workspace.dockOpen[.right] == true ? "Скрыть правую панель" : "Показать правую панель")
+                .padding(.top, max(titleStrip, 30) / 2 - 12)
+                .padding(.trailing, 14)
+                .ignoresSafeArea(.container, edges: .top)
+            }
+        }
+        .animation(.smooth(duration: 0.3), value: workspace.dockOpen[.right])
+        .animation(.smooth(duration: 0.2), value: workspace.drag != nil)
         .overlay { DragGhost() }                 // over the sidebar and the panes alike
         .overlay { TipLayer().ignoresSafeArea() }  // hover hints for the buttons
         .modifier(MainChrome(vault: vault, map: map, workspace: workspace, pickingAccess: $pickingAccess))
@@ -87,6 +109,28 @@ struct MainView: View {
         }
         .modifier(MainChrome(vault: vault, map: map, workspace: workspace, pickingAccess: $pickingAccess))
         #endif
+    }
+
+    /// The right dock, like Obsidian's right sidebar: notes and widgets stacked next to the panes.
+    @ViewBuilder
+    private var rightDock: some View {
+        if workspace.docks[.right] != nil, workspace.dockOpen[.right] == true {
+            HStack(spacing: 0) {
+                DockResizeHandle { delta in
+                    workspace.dockSize[.right] = min(720, max(220, (workspace.dockSize[.right] ?? 340) - delta))
+                }
+                DockArea(dock: .right)
+            }
+            .frame(width: (workspace.dockSize[.right] ?? 340) + 6)
+            .padding(.bottom, 8)
+            .padding(.top, titleStrip < 10 ? 30 : 0)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else if workspace.drag != nil, workspace.docks[.right] == nil {
+            DockDropStrip(dock: .right)
+                .frame(width: 54)
+                .padding(.vertical, 40)
+                .transition(.opacity)
+        }
     }
 
     private var detail: some View {

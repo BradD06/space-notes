@@ -11,6 +11,8 @@ struct NoteView: View {
     @Environment(VaultStore.self) private var vault
     @Environment(MapModel.self) private var map
     @Environment(\.paneID) private var paneID
+    /// In a side dock the note reads like a page: no location line or big title (Obsidian's sidebar notes).
+    @Environment(\.inDock) private var inDock
     @Environment(Workspace.self) private var workspace
     @State private var text = ""
     @State private var lastSaved = ""
@@ -30,6 +32,7 @@ struct NoteView: View {
         let wide = PageWidth.isWide(text)
         HStack(spacing: 0) {
         VStack(alignment: .leading, spacing: 14) {
+            if !inDock {
             HStack(alignment: .firstTextBaseline) {
                 if file == nil {
                     Text(location.uppercased())
@@ -42,6 +45,7 @@ struct NoteView: View {
             if file == nil {
                 Text(cosmos.title(noteID))
                     .font(.system(size: 38, weight: .semibold, design: .serif))
+            }
             }
             MarkdownEditor(text: $text,
                            revealAll: sourceMode,
@@ -65,8 +69,8 @@ struct NoteView: View {
                 .padding(.horizontal, -44)
                 #endif
         }
-        .padding(.horizontal, wide ? 28 : 32)
-        .padding(.top, 18)
+        .padding(.horizontal, inDock ? 12 : (wide ? 28 : 32))
+        .padding(.top, inDock ? 6 : 18)
         .frame(maxWidth: wide ? .infinity : 760)
         .frame(maxWidth: .infinity)
         .animation(.smooth(duration: 0.25), value: wide)

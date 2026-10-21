@@ -37,6 +37,7 @@ struct SidebarView: View {
                 .padding(.vertical, 6)
             }
             .scrollIndicators(.never)
+            leftDock
             GlowDivider()
             vaultBar
         }
@@ -69,6 +70,42 @@ struct SidebarView: View {
         .onAppear { workspace.onMoveToFolder = { payload, folder in moveItem(payload, to: folder) } }
         .fileImporter(isPresented: $openingVault, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await vault.open(url) } }
+        }
+    }
+
+    /// The left dock under the folders, like Obsidian's lower sidebar pane (the graph, a note, a widget).
+    @ViewBuilder
+    private var leftDock: some View {
+        if !compact {
+            if workspace.docks[.left] != nil {
+                VStack(spacing: 0) {
+                    HStack(spacing: 6) {
+                        Button {
+                            withAnimation(.smooth(duration: 0.25)) { workspace.dockOpen[.left] = !(workspace.dockOpen[.left] ?? true) }
+                        } label: {
+                            Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                                .rotationEffect(.degrees(workspace.dockOpen[.left] == true ? 90 : 0))
+                                .foregroundStyle(Theme.muted)
+                                .frame(width: 18, height: 14)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        DockResizeHandle(vertical: true) { delta in
+                            workspace.dockSize[.left] = min(700, max(120, (workspace.dockSize[.left] ?? 260) - delta))
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    if workspace.dockOpen[.left] == true {
+                        DockArea(dock: .left)
+                            .frame(height: workspace.dockSize[.left] ?? 260)
+                            .padding(.horizontal, 6).padding(.bottom, 6)
+                    }
+                }
+            } else if workspace.drag != nil {
+                DockDropStrip(dock: .left)
+                    .frame(height: 56)
+                    .padding(.horizontal, 10).padding(.bottom, 8)
+            }
         }
     }
 
@@ -412,6 +449,8 @@ struct SidebarView: View {
         .contextMenu {
             Button("Открыть в новой вкладке", systemImage: "plus.square.on.square") { workspace.openInNewTab(.note(id)) }
             Button("Открыть справа", systemImage: "rectangle.split.2x1") { workspace.openToTheSide(.note(id)) }
+            Button("Открыть в правой панели", systemImage: "sidebar.right") { workspace.moveToDock(.right, tab: .note(id)) }
+            Button("Открыть в левой панели, под папками", systemImage: "sidebar.left") { workspace.moveToDock(.left, tab: .note(id)) }
             Divider()
             Button("Удалить звезду…", systemImage: "trash", role: .destructive) {
                 deleting = DeleteTarget(kind: .star, name: vault.cosmos.title(id), path: id, stars: 1)
