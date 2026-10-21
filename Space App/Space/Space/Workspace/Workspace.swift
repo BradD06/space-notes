@@ -147,7 +147,7 @@ final class Workspace {
         walk(root)
         return panes.first { p in
             guard p.id != paneID, case .note(let id)? = p.activeTab else { return false }
-            return !Books.isBook(id)
+            return Documents.isNote(id)
         }
     }
 
@@ -426,7 +426,7 @@ final class Workspace {
         // The focused pane first (when it isn't the book's own), then the others.
         if let i = panes.firstIndex(where: { $0.id == focusedID }) { panes.insert(panes.remove(at: i), at: 0) }
         for p in panes where p.id != paneID {
-            if case .note(let id)? = p.activeTab, !Books.isBook(id) { return id }
+            if case .note(let id)? = p.activeTab, Documents.isNote(id) { return id }
         }
         return nil
     }

@@ -384,15 +384,25 @@ struct SidebarView: View {
                        count: nil, onToggle: {}, onTap: { vault.selection = .note(id) }) {
             if Books.isBook(id) {
                 Image(systemName: "book.closed.fill").font(.system(size: 10)).foregroundStyle(selected ? Color.white : Theme.muted)
+            } else if Documents.isDocument(id) {
+                Image(systemName: Documents.icon(for: id)).font(.system(size: 10)).foregroundStyle(selected ? Color.white : Theme.muted)
             }
             Text(vault.cosmos.title(id)).lineLimit(1)
+            if Documents.isDocument(id) {
+                // Like Obsidian: the kind of file next to its name.
+                Text((id as NSString).pathExtension.uppercased())
+                    .font(Theme.mono(8.5)).foregroundStyle(selected ? Color.white.opacity(0.7) : Theme.faint)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(selected ? 0.15 : 0.06)))
+                    .fixedSize()
+            }
         }
         // Drag a note onto any pane (or its side) to open it there.
         .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .global)
             .onChanged { v in
                 if workspace.drag == nil {
                     workspace.beginDrag(WorkTab.note(id).token, title: vault.cosmos.title(id),
-                                        icon: Books.isBook(id) ? "book.closed" : "doc.text", at: v.location)
+                                        icon: Documents.icon(for: id), at: v.location)
                 } else {
                     workspace.moveDrag(to: v.location)
                 }

@@ -144,12 +144,29 @@ final class VaultStore {
     }
 
     func save(_ id: String, text: String) {
+        guard write(id, { try text.write(to: $0, atomically: true, encoding: .utf8) }) else { return }
+        guard var note = cosmos.notes[id] else { return }
+        note.links = MarkdownParser.links(in: text)
+        note.tags = MarkdownParser.tags(in: text)
+        note.modified = .now
+        setCosmos(cosmos.updating(note))
+    }
+
+    /// Saves a document of the vault (text, RTF…): `work` writes it to the URL it is given.
+    func saveDocument(_ id: String, _ work: (URL) throws -> Void) {
+        guard write(id, work), var note = cosmos.notes[id] else { return }
+        note.modified = .now
+        setCosmos(cosmos.updating(note))
+    }
+
+    /// Writes a file of the vault in place, coordinated with iCloud and other apps. False (and the error shown) if it failed.
+    private func write(_ id: String, _ work: (URL) throws -> Void) -> Bool {
         // A note that was just moved or deleted must not come back at its old place.
-        guard let url = url(for: id), FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let url = url(for: id), FileManager.default.fileExists(atPath: url.path) else { return false }
         var coordinatorError: NSError?
         var writeError: Error?
         NSFileCoordinator().coordinate(writingItemAt: url, options: [], error: &coordinatorError) { target in
-            do { try text.write(to: target, atomically: true, encoding: .utf8) } catch { writeError = error }
+            do { try work(target) } catch { writeError = error }
         }
         if let e = writeError ?? coordinatorError {
             if Self.isPermissionError(e) {
@@ -158,13 +175,9 @@ final class VaultStore {
             } else {
                 errorMessage = "Не удалось сохранить: \(e.localizedDescription)"
             }
-            return
+            return false
         }
-        guard var note = cosmos.notes[id] else { return }
-        note.links = MarkdownParser.links(in: text)
-        note.tags = MarkdownParser.tags(in: text)
-        note.modified = .now
-        setCosmos(cosmos.updating(note))
+        return true
     }
 
     // MARK: Creating a vault

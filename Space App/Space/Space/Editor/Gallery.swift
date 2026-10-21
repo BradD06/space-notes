@@ -308,7 +308,7 @@ struct GalleryView: View {
         var ids: [String]
         switch spec.source {
         case .notes:
-            ids = c.notes.keys.filter { !Books.isBook($0) }
+            ids = c.notes.keys.filter(Documents.isNote)
         case .books:
             ids = c.notes.keys.filter(Books.isBook)
         case .universe:
@@ -337,9 +337,9 @@ struct GalleryView: View {
         return ids
     }
 
-    /// What the card opens: [[Title]] for notes, [[File.pdf]] for books (the note view knows both).
+    /// What the card opens: [[Title]] for notes, [[File.pdf]] for books and documents (the note view knows both).
     private func link(for id: String, in c: Cosmos) -> String {
-        Books.isBook(id) ? (id as NSString).lastPathComponent : c.title(id)
+        Documents.isNote(id) ? c.title(id) : (id as NSString).lastPathComponent
     }
 
     private var emptyText: String {

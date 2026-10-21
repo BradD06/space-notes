@@ -18,8 +18,7 @@ nonisolated enum MarkdownParser {
             if let bar = target.firstIndex(of: "|") { target = String(target[..<bar]) }
             if let hash = target.firstIndex(of: "#") { target = String(target[..<hash]) }
             if let slash = target.lastIndex(of: "/") { target = String(target[target.index(after: slash)...]) }
-            if target.lowercased().hasSuffix(".md") { target.removeLast(3) }
-            if target.lowercased().hasSuffix(".pdf") { target.removeLast(4) }   // [[Book.pdf#page=3]] links to the book
+            target = Documents.strippingExtension(target)   // [[Book.pdf#page=3]], [[Report.docx]] link to the file
             target = target.trimmingCharacters(in: .whitespaces)
             if !target.isEmpty { result.append(target) }
         }

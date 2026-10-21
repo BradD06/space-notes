@@ -168,13 +168,16 @@ struct NoteView: View {
     }
 
     /// Click on [[Title]]: open that star, or create it next to this one if it doesn't exist yet (like Obsidian).
-    /// "Book.pdf#page=3" → "Book"; "Note.md" → "Note".
+    /// "Book.pdf#page=3" → "Book"; "Note.md" → "Note"; "Report.docx" → "Report".
     static func bareTitle(_ link: String) -> String {
+        Documents.strippingExtension(fileName(link)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// "folder/Book.pdf#page=3" → "Book.pdf".
+    private static func fileName(_ link: String) -> String {
         var t = link
         if let hash = t.firstIndex(of: "#") { t = String(t[..<hash]) }
-        if t.lowercased().hasSuffix(".pdf") { t.removeLast(4) }
-        if t.lowercased().hasSuffix(".md") { t.removeLast(3) }
-        return t.trimmingCharacters(in: .whitespaces)
+        return (t as NSString).lastPathComponent.trimmingCharacters(in: .whitespaces)
     }
 
     private func openLink(_ link: String) {
@@ -182,7 +185,10 @@ struct NoteView: View {
         flush()
         let c = vault.cosmos
         let title = Self.bareTitle(link)
-        if let id = c.notes.values.first(where: { $0.title.lowercased() == title.lowercased() })?.id {
+        // [[Report.docx]] means that very file, even if a note "Report" sits next to it.
+        let file = Self.fileName(link).lowercased()
+        let exact = Documents.namesFile(link) ? c.notes.keys.first { ($0 as NSString).lastPathComponent.lowercased() == file } : nil
+        if let id = exact ?? c.notes.values.first(where: { $0.title.lowercased() == title.lowercased() })?.id {
             if Books.isBook(id) {
                 // "#page=N&q=words": the book opens at that page and finds the quote there.
                 if let r = link.range(of: "#page="), let page = Int(link[r.upperBound...].prefix(while: \.isNumber)) {
@@ -197,8 +203,9 @@ struct NoteView: View {
             vault.selection = .note(id)
             return
         }
-        guard !link.lowercased().contains(".pdf") else {
-            vault.errorMessage = "Книга «\(title)» не найдена в хранилище."
+        guard !Documents.namesFile(link) else {
+            vault.errorMessage = Books.isBook(Self.fileName(link)) ? "Книга «\(title)» не найдена в хранилище."
+                                                                   : "Файл «\(Self.fileName(link))» не найден в хранилище."
             return
         }
         let universe = c.universeOf[noteID] ?? ""
