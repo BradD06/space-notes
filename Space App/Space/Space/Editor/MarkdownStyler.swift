@@ -91,6 +91,10 @@ struct MarkdownStyler {
     var galleryHeights: [CGFloat] = []
     /// Does `[[target]]` point to an existing note?
     var resolves: (String) -> Bool = { _ in true }
+    /// The picture an embed points to (`![[photo.png]]`, `![](photo.png)`), if it is one and it exists.
+    var image: (String) -> PlatformImage? = { _ in nil }
+    /// Widest a picture may be drawn: the text column.
+    var imageWidth: CGFloat = 560
 
     static let noteScheme = "space-note"
     static let taskScheme = "space-task"
@@ -106,7 +110,13 @@ struct MarkdownStyler {
     // Inline
     private static let code = try! NSRegularExpression(pattern: "`([^`\\n]+)`")
     private static let wikilink = try! NSRegularExpression(pattern: "(!?)\\[\\[([^\\[\\]\\n|#]+)(#[^\\[\\]\\n|]*)?(?:\\|([^\\[\\]\\n]+))?\\]\\]")
-    private static let mdLink = try! NSRegularExpression(pattern: "\\[([^\\[\\]\\n]+)\\]\\(([^)\\s]+)\\)")
+    private static let mdLink = try! NSRegularExpression(pattern: "(!?)\\[([^\\[\\]\\n]*)\\]\\(([^)\\s]+)\\)")
+    private static let footnote = try! NSRegularExpression(pattern: "\\[\\^[^\\]\\s]+\\]")
+    private static let comment = try! NSRegularExpression(pattern: "%%.*?%%")
+    private static let blockID = try! NSRegularExpression(pattern: "(?<=\\s)\\^[A-Za-z0-9-]+$")
+    // A picture alone on its line: ![[photo.png|300]] or ![alt|300](photo.png)
+    private static let embedLine = try! NSRegularExpression(pattern: "^[ \\t]*!\\[\\[([^\\[\\]\\n|#]+)(?:\\|(\\d+)(?:x(\\d+))?)?\\]\\][ \\t]*$")
+    private static let imageLine = try! NSRegularExpression(pattern: "^[ \\t]*!\\[([^\\]\\n]*?)(?:\\|(\\d+)(?:x(\\d+))?)?\\]\\(([^)\\n]+)\\)[ \\t]*$")
     private static let bold = try! NSRegularExpression(pattern: "(\\*\\*|__)(?=\\S)(.+?)(?<=\\S)\\1")
     private static let italicStar = try! NSRegularExpression(pattern: "(?<![\\*\\w])\\*(?![\\s\\*])(.+?)(?<![\\s\\*])\\*(?![\\*\\w])")
     private static let italicUnderscore = try! NSRegularExpression(pattern: "(?<![_\\w])_(?![\\s_])(.+?)(?<![\\s_])_(?![_\\w])")
@@ -244,6 +254,13 @@ struct MarkdownStyler {
                 continue
             }
 
+            if let picture = embeddedImage(ns, line) {
+                styleImageLine(storage, ns: ns, line: line, size: picture.size, active: touches(line))
+                blocks.append(EditorBlock(kind: .image(picture.image, size: picture.size), range: line))
+                i += 1
+                continue
+            }
+
             styleLine(storage, ns: ns, line: line, active: touches(line))
             i += 1
         }
@@ -268,6 +285,45 @@ struct MarkdownStyler {
             p.paragraphSpacing = spaced && k == lines.count - 1 ? theme.bodySize * 0.6 : 0
             p.paragraphSpacingBefore = spaced && k == 0 ? 4 : 0
             s.addAttributes([.font: tiny, .foregroundColor: PlatformColor.clear, .paragraphStyle: p], range: ns.paragraphRange(for: line))
+        }
+    }
+
+    // MARK: Pictures
+
+    /// A line that is just a picture embed, with the picture and the size to draw it at.
+    private func embeddedImage(_ ns: NSString, _ line: NSRange) -> (image: PlatformImage, size: CGSize)? {
+        guard line.length > 4, ns.range(of: "![", options: [], range: line).location != NSNotFound else { return nil }
+        let str = ns as String
+        var ref: String, w: Int?, h: Int?
+        func number(_ m: NSTextCheckingResult, _ k: Int) -> Int? { m.range(at: k).location == NSNotFound ? nil : Int(ns.substring(with: m.range(at: k))) }
+        if let m = Self.embedLine.firstMatch(in: str, range: line) {
+            ref = ns.substring(with: m.range(at: 1)); w = number(m, 2); h = number(m, 3)
+        } else if let m = Self.imageLine.firstMatch(in: str, range: line) {
+            ref = ns.substring(with: m.range(at: 4)); w = number(m, 2); h = number(m, 3)
+            if let space = ref.range(of: " \"") { ref = String(ref[..<space.lowerBound]) }   // ![](a.png "title")
+        } else { return nil }
+        guard let img = image(ref), img.size.width > 0, img.size.height > 0 else { return nil }
+        let natural = img.size
+        var width = CGFloat(w ?? Int(natural.width))
+        var height = h.map(CGFloat.init) ?? width * natural.height / natural.width
+        if width > imageWidth { height *= imageWidth / width; width = imageWidth }
+        if height > 900 { width *= 900 / height; height = 900 }
+        return (img, CGSize(width: max(width, 1), height: max(height, 1)))
+    }
+
+    /// The picture is drawn in the room under its line. Away from the caret the Markdown itself folds away,
+    /// on the caret's line it stays visible (dimmed) above the picture so it can be edited.
+    private func styleImageLine(_ s: NSTextStorage, ns: NSString, line: NSRange, size: CGSize, active: Bool) {
+        let p = NSMutableParagraphStyle()
+        p.paragraphSpacingBefore = 6
+        p.paragraphSpacing = size.height + 12
+        if active {
+            s.addAttributes([.paragraphStyle: p, .font: theme.font(size: theme.bodySize * 0.82, mono: true), .foregroundColor: theme.faint], range: ns.paragraphRange(for: line))
+        } else {
+            p.minimumLineHeight = 0.01
+            p.maximumLineHeight = 0.01
+            s.addAttribute(.paragraphStyle, value: p, range: ns.paragraphRange(for: line))
+            hide(s, line, active: false)
         }
     }
 
@@ -519,7 +575,13 @@ struct MarkdownStyler {
         var protected: [NSRange] = []
         func free(_ r: NSRange) -> Bool { !protected.contains { NSIntersectionRange($0, r).length > 0 } }
 
-        for m in Self.code.matches(in: str, range: range) {
+        // %%Obsidian comments%% stay in the file but aren't part of the text.
+        for m in Self.comment.matches(in: str, range: range) {
+            s.addAttributes([.foregroundColor: theme.faint, .font: theme.font(size: theme.bodySize, italic: true)], range: m.range)
+            protected.append(m.range)
+        }
+
+        for m in Self.code.matches(in: str, range: range) where free(m.range) {
             s.addAttributes([.font: theme.font(size: theme.bodySize, mono: true), .backgroundColor: theme.codeBackground,
                              .foregroundColor: theme.accent], range: m.range(at: 1))
             hide(s, NSRange(location: m.range.location, length: 1), active: active)
@@ -544,13 +606,26 @@ struct MarkdownStyler {
         }
 
         for m in Self.mdLink.matches(in: str, range: range) where free(m.range) {
-            let address = ns.substring(with: m.range(at: 2))
+            let address = ns.substring(with: m.range(at: 3))
             var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: theme.link, .underlineStyle: NSUnderlineStyle.single.rawValue,
                                                         .underlineColor: theme.link.withAlphaComponent(0.4)]
-            if let u = URL(string: address) { attrs[.link] = u }
-            s.addAttributes(attrs, range: m.range(at: 1))
-            hide(s, NSRange(location: m.range.location, length: 1), active: active)
-            hide(s, NSRange(location: NSMaxRange(m.range(at: 1)), length: NSMaxRange(m.range) - NSMaxRange(m.range(at: 1))), active: active)
+            if let u = URL(string: address), u.scheme != nil { attrs[.link] = u }
+            // "![](photo.png)" inside a line, or "[](…)" without text: the address stands for the text.
+            let visible = m.range(at: 2).length > 0 ? m.range(at: 2) : m.range(at: 3)
+            s.addAttributes(attrs, range: visible)
+            hide(s, NSRange(location: m.range.location, length: visible.location - m.range.location), active: active)
+            hide(s, NSRange(location: NSMaxRange(visible), length: NSMaxRange(m.range) - NSMaxRange(visible)), active: active)
+            protected.append(m.range)
+        }
+
+        for m in Self.footnote.matches(in: str, range: range) where free(m.range) {
+            s.addAttributes([.foregroundColor: theme.link, .font: theme.font(size: theme.bodySize * 0.75, serif: false),
+                             .baselineOffset: theme.bodySize * 0.35], range: m.range)
+            protected.append(m.range)
+        }
+
+        for m in Self.blockID.matches(in: str, range: range) where free(m.range) {
+            if active { s.addAttribute(.foregroundColor, value: theme.faint, range: m.range) } else { hide(s, m.range, active: false) }
             protected.append(m.range)
         }
 
@@ -693,13 +768,72 @@ enum MarkdownEditing {
         return (typed, NSRange(location: lineStart + NSMaxRange(open), length: typed.utf16.count))
     }
 
+    /// Best matches first: names starting with the query, then containing it, then holding its letters
+    /// in order ("мпв" finds "Моя первая вселенная"), the way Obsidian's switcher forgives typos.
     static func suggestions(for query: String, in titles: [String]) -> [String] {
-        let q = query.lowercased()
-        let hits = titles.filter { q.isEmpty || $0.lowercased().contains(q) }
+        let q = query.lowercased().trimmingCharacters(in: .whitespaces)
+        func rank(_ title: String) -> Int? {
+            let t = title.lowercased()
+            if q.isEmpty || t.hasPrefix(q) { return 0 }
+            if t.contains(q) { return 1 }
+            var rest = t[...]
+            for ch in q where ch != " " {
+                guard let i = rest.firstIndex(of: ch) else { return nil }
+                rest = rest[rest.index(after: i)...]
+            }
+            return 2
+        }
+        var seen = Set<String>()
+        let hits = titles.compactMap { t in rank(t).map { (t, $0) } }.filter { seen.insert($0.0.lowercased()).inserted }
         return Array(hits.sorted { a, b in
-            let pa = a.lowercased().hasPrefix(q), pb = b.lowercased().hasPrefix(q)
-            return pa != pb ? pa : a.localizedStandardCompare(b) == .orderedAscending
-        }.prefix(8))
+            a.1 != b.1 ? a.1 < b.1 : a.0.localizedStandardCompare(b.0) == .orderedAscending
+        }.prefix(8).map(\.0))
+    }
+
+    /// The headings of a note, for `[[Note#`. Lines inside code blocks don't count.
+    static func headings(in text: String) -> [String] {
+        var out: [String] = []
+        var inCode = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") || t.hasPrefix("~~~") { inCode.toggle(); continue }
+            guard !inCode, t.hasPrefix("#") else { continue }
+            let hashes = t.prefix { $0 == "#" }.count
+            guard hashes <= 6, t.dropFirst(hashes).first == " " else { continue }
+            let title = t.dropFirst(hashes).trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "[[", with: "").replacingOccurrences(of: "]]", with: "")
+            if !title.isEmpty { out.append(title) }
+        }
+        return out
+    }
+
+    static func isWebAddress(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.contains(" "), !t.contains("\n"), let u = URL(string: t), let scheme = u.scheme?.lowercased() else { return false }
+        return scheme == "mailto" || (["http", "https"].contains(scheme) && u.host != nil)
+    }
+
+    /// `[selection](address)` with the address taken from the clipboard when it holds one. The caret lands
+    /// where typing is still needed: in the brackets, in the parentheses, or after the link.
+    static func webLink(selected: String, clipboard: String?) -> (text: String, caret: Int) {
+        if isWebAddress(selected) { return ("[](\(selected))", 1) }
+        let address = clipboard.flatMap { isWebAddress($0) ? $0.trimmingCharacters(in: .whitespacesAndNewlines) : nil } ?? ""
+        let text = "[\(selected)](\(address))"
+        let length = (text as NSString).length
+        if selected.isEmpty { return (text, 1) }
+        return (text, address.isEmpty ? length - 1 : length)
+    }
+
+    /// Picture embeds to insert at `range`, each on a line of its own (a picture shows only when alone on its line),
+    /// and where the caret goes: the start of the next line, so the pictures show right away.
+    static func embedSnippet(_ names: [String], in text: NSString, at range: NSRange) -> (text: String, caret: Int) {
+        var snippet = names.map(EditorImages.embed).joined(separator: "\n")
+        let before = range.location > 0 ? text.character(at: range.location - 1) : 10
+        let afterIndex = NSMaxRange(range)
+        let lineFollows = afterIndex < text.length && text.character(at: afterIndex) == 10
+        if before != 10 { snippet = "\n" + snippet }
+        if !lineFollows { snippet += "\n" }
+        return (snippet, (snippet as NSString).length + (lineFollows ? 1 : 0))
     }
 }
 
@@ -720,6 +854,8 @@ struct EditorBlock {
         case properties
         /// A ```gallery block: a grid of cards on top.
         case gallery
+        /// A picture embed alone on its line, drawn under it at `size`.
+        case image(PlatformImage, size: CGSize)
     }
     var kind: Kind
     var range: NSRange
@@ -727,6 +863,10 @@ struct EditorBlock {
     var rows: [NSRange] = []
     /// Left offset of the box, e.g. a code block inside a callout.
     var indent: CGFloat = 0
+}
+
+extension EditorBlock.Kind {
+    var isImage: Bool { if case .image = self { true } else { false } }
 }
 
 /// TextKit 1 layout manager that paints code boxes, table grids and quote bars under the glyphs.
@@ -771,6 +911,8 @@ final class BlockLayoutManager: NSLayoutManager {
             case .callout(let color):
                 fill(ctx, rect.insetBy(dx: 0, dy: -4), radius: 10, color: color.withAlphaComponent(0.1))
                 fill(ctx, CGRect(x: rect.minX, y: rect.minY - 4, width: 3, height: rect.height + 8), radius: 1.5, color: color)
+            case .image(let image, let size):
+                drawImage(ctx, image, size: size, line: glyphs.location, origin: origin, left: rect.minX)
             case .columns, .properties, .gallery:
                 break
             }
@@ -803,6 +945,19 @@ final class BlockLayoutManager: NSLayoutManager {
         }
         ctx.strokePath()
         stroke(ctx, frame, radius: 8, color: line)
+    }
+
+    /// Pictures sit in the paragraph spacing under their line.
+    private func drawImage(_ ctx: CGContext, _ image: PlatformImage, size: CGSize, line glyph: Int, origin: CGPoint, left: CGFloat) {
+        let used = lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        let frame = CGRect(x: left, y: used.maxY + origin.y + 6, width: size.width, height: size.height)
+        ctx.addPath(CGPath(roundedRect: frame, cornerWidth: 8, cornerHeight: 8, transform: nil))
+        ctx.clip()
+        #if os(macOS)
+        image.draw(in: frame, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
+        #else
+        image.draw(in: frame)
+        #endif
     }
 
     private func fill(_ ctx: CGContext, _ r: CGRect, radius: CGFloat, color: PlatformColor) {
@@ -838,7 +993,7 @@ extension BlockLayoutManager: NSLayoutManagerDelegate {
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUseTemporaryAttributes attrs: [NSAttributedString.Key: Any] = [:],
                        forDrawingToScreen toScreen: Bool, atCharacterIndex charIndex: Int,
                        effectiveRange effectiveCharRange: NSRangePointer?) -> [NSAttributedString.Key: Any]? {
-        for block in blocks where block.kind == .columns || block.kind == .properties || block.kind == .gallery {
+        for block in blocks where block.kind == .columns || block.kind == .properties || block.kind == .gallery || block.kind.isImage {
             if charIndex >= block.range.location && charIndex <= NSMaxRange(block.range) { return [:] }
         }
         return attrs

@@ -50,7 +50,9 @@ struct NoteView: View {
                            onOpenLink: openLink,
                            state: editor,
                            hideProperties: hideProperties,
-                           vault: vault)
+                           vault: vault,
+                           noteURL: file ?? vault.url(for: noteID))
+                .editorMedia(editor)
                 .overlay(alignment: .topLeading) { LinkSuggestions(state: editor) }
                 .overlay(alignment: .topLeading) { SlashMenu(state: editor) }
                 .overlay(alignment: .topLeading) { SelectionBar(state: editor) }
@@ -146,6 +148,8 @@ struct NoteView: View {
                 Button("Код", systemImage: "chevron.left.forwardslash.chevron.right") { editor.insertMarkup?("`", "`") }
                 Divider()
                 Button("Ссылка на звезду  ⌘K", systemImage: "link") { editor.insertMarkup?("[[", "]]") }
+                Button("Ссылка на сайт  ⌘⇧K", systemImage: "globe") { editor.insertWebLink?() }
+                Button("Картинка…", systemImage: "photo") { editor.pickingImage = true }
                 Button("Задача", systemImage: "checkmark.square") { editor.insertMarkup?("- [ ] ", "") }
                 Button("Цитата", systemImage: "text.quote") { editor.insertMarkup?("> ", "") }
                 Button("Выноска", systemImage: "exclamationmark.bubble") { editor.insertMarkup?("> [!note] ", "") }
