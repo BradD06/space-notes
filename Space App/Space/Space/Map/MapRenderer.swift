@@ -35,6 +35,7 @@ struct MapRenderer {
         if case .universe(let uid) = focus { drawConstellations(&ctx, universe: uid, cam: cam, toScreen: toScreen) }
         if let orbit { drawOrbitRings(&ctx, orbit: orbit, cam: cam, toScreen: toScreen, alpha: arranged) }
         drawEdges(&ctx, screen: screen, focus: focus, orbit: orbit, arranged: arranged, hovered: hovered)
+        drawSuggestions(&ctx, screen: screen, focus: focus)
         let starLabels = drawStars(&ctx, screen: screen, focus: focus, orbit: orbit, arranged: arranged,
                                    hovered: hovered, hoverNeighbors: hoverNeighbors, cam: cam)
 
@@ -280,6 +281,7 @@ struct MapRenderer {
                 alpha = 1; width = 2.6; dashed = false
                 color = universeColor(cosmos.universeOf[pk])
             }
+            if model.lens != nil, hovered == nil { alpha *= 0.35 }
             (alpha, width) = model.smoothed(edge: e, alpha: alpha, width: width)
             // On opening, a link draws itself from the star that lit up first.
             let grow = model.introEdge(e.a, e.b, now: now)
@@ -311,16 +313,17 @@ struct MapRenderer {
             guard let p = screen[id] else { continue }
             let uid = cosmos.universeOf[id]
             let color = universeColor(uid)
-            // Size grows with the logarithm of the number of links: every doubling of links adds the same step,
-            // so hubs stand out while a note with 200 links doesn't swallow the map.
-            // 0 links → 0.6, 1 → 1.0, 3 → 1.4, 7 → 1.8, 15 → 2.2, 31 → 2.6, 127+ → 3.4.
-            let weight = 0.6 + 0.4 * min(log2(1 + CGFloat(cosmos.degree(id))), 7)
+            // Size grows with the number of links, at every level of the map.
+            let weight = Self.weight(cosmos.degree(id))
             var d: CGFloat = 4, alpha = 1.0, showLabel = false, bold = false, labelBoost = 0
+            let landmark = insights.landmarks.contains(id)
 
             switch focus {
             case .multiverse:
                 d = 2.2 * weight
                 alpha = model.hoveredUniverse.map { $0 == uid ? 1 : 0.25 } ?? 0.85
+                // Landmarks keep their names even on the overview, so each universe reads by its biggest stars.
+                showLabel = landmark && (model.hoveredUniverse == nil || model.hoveredUniverse == uid)
             case .universe(let current):
                 // Neighbouring universes stay visible (dimmer), so you can see where a swipe will take you.
                 if uid != current { d = 3.2 * weight; alpha = 0.42 }
@@ -329,13 +332,15 @@ struct MapRenderer {
                     d = (id == h ? 6.5 : 4.5) * weight; alpha = related ? 1 : 0.12
                     showLabel = id == h
                 } else {
-                    d = 4.5 * weight; showLabel = zoomedIn
+                    d = 4.5 * weight; showLabel = zoomedIn || landmark
                 }
             case .star(let sid):
                 if id == sid { d = 11 + 3 * weight; showLabel = true; bold = true }
                 else if let ring = orbit?.ringOf[id] {
                     let onRoute = hovered.flatMap { h in h == sid ? nil : orbit?.path(to: h).contains(id) } ?? false
-                    d = (id == hovered ? 10 : ([10, 8, 6.5, 5.5, 5, 4.5, 4, 3.5] as [CGFloat])[min(ring, 8) - 1]) * (0.7 + 0.3 * weight)
+                    // The orbit sets the base size, the number of links scales it: a hub far out is still big.
+                    let ringSize = ([9, 7.5, 6, 5, 4.5, 4, 3.6, 3.2] as [CGFloat])[min(ring, 8) - 1] * (0.55 + 0.45 * weight)
+                    d = id == hovered ? max(10, ringSize) : ringSize
                     // Orbits 5–8 fade towards nothing; a star on the hovered route still shows up enough to read.
                     let steps = orbit?.depth[id] ?? 1
                     let base = [1, 0.85, 0.72, 0.6][min(steps, 4) - 1] * OrbitLayout.fade(steps)
@@ -359,6 +364,12 @@ struct MapRenderer {
                         showLabel = (ring == 1 || (ring == 2 && secondCount <= 14)) && k > 0.6
                     }
                 } else { d = 4; alpha = (0.3 - 0.24 * arranged) * (hovered == nil ? 1 : 0.4) }
+            }
+            // A hint lens: the stars it is about light up and get named, everything else steps back.
+            let hinted = lensMatches(id)
+            if let hinted, hovered == nil {
+                if hinted { alpha = max(alpha, 0.95); showLabel = true; labelBoost = 50_000 }
+                else { alpha *= 0.2; showLabel = false }
             }
             // Hover and focus changes fade over a fraction of a second instead of snapping.
             if id == model.peekStar { alpha = 1; d = max(d, 10); showLabel = true; labelBoost = 200_000 }
@@ -398,6 +409,13 @@ struct MapRenderer {
             ctx.fill(Path(ellipseIn: CGRect(x: p.x - glow, y: p.y - glow, width: 2 * glow, height: 2 * glow)),
                      with: .radialGradient(Gradient(colors: [color.opacity(alpha * 0.35), .clear]), center: p, startRadius: 0, endRadius: glow))
             ctx.fill(Path(ellipseIn: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d)), with: .color(color.opacity(alpha)))
+            if hinted == true, let lens = model.lens {
+                // A ring around each hinted star, so it can be found even where stars are tiny.
+                let rr = max(7, d / 2 + 4)
+                let ring = Path(ellipseIn: CGRect(x: p.x - rr, y: p.y - rr, width: 2 * rr, height: 2 * rr))
+                ctx.stroke(ring, with: .color(Self.lensColor(lens).opacity(0.9 * min(1, alpha))),
+                           style: StrokeStyle(lineWidth: 1.3, dash: lens == .orphans ? [2.5, 2.5] : []))
+            }
             if showLabel {
                 labels.append(StarLabel(text: cosmos.title(id), point: CGPoint(x: p.x, y: p.y + d / 2 + 5),
                                         bold: bold, alpha: alpha, color: color, boxed: isHot, priority: cosmos.degree(id) + labelBoost))
@@ -470,6 +488,51 @@ struct MapRenderer {
                            rect(atRadius: g.radius + 20, outward: true)]
             guard let chosen = options.first(where: { placer.tryPlace($0.0) }) else { continue }
             ctx.draw(text, at: chosen.1, anchor: chosen.2)
+        }
+    }
+
+    /// Links that could be made, as dotted lines: all of them under the "Связать" lens,
+    /// and for the star in focus always, so its orbits also show what it is missing.
+    private func drawSuggestions(_ ctx: inout GraphicsContext, screen: [String: CGPoint], focus: MapModel.Focus) {
+        var pairs: [Insights.Suggestion] = []
+        if model.lens == .suggestions { pairs = insights.suggestions }
+        if case .star(let sid) = focus { pairs += insights.suggestionsFor[sid] ?? [] }
+        guard !pairs.isEmpty else { return }
+        let color = Self.lensColor(.suggestions)
+        for s in pairs {
+            guard let pa = screen[s.a], let pb = screen[s.b] else { continue }
+            let quiet = model.hoveredStar.map { $0 != s.a && $0 != s.b } ?? false
+            let alpha = min(model.historyAppear(s.a, now: now), model.historyAppear(s.b, now: now)) * (quiet ? 0.12 : 0.75)
+            guard alpha > 0.02 else { continue }
+            var path = Path()
+            path.move(to: pa)
+            path.addLine(to: pb)
+            ctx.stroke(path, with: .color(color.opacity(alpha)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [1.5, 4]))
+        }
+    }
+
+    /// nil when no lens is on; otherwise whether the star is one the lens is about.
+    private func lensMatches(_ id: String) -> Bool? {
+        switch model.lens {
+        case nil: nil
+        case .orphans: insights.orphanSet.contains(id)
+        case .forgotten: insights.forgottenSet.contains(id)
+        case .suggestions: insights.suggestedSet.contains(id)
+        }
+    }
+
+    private var insights: Insights { model.insights }
+
+    /// Star size from its number of links, on a logarithmic scale: every doubling of links adds the same step,
+    /// so hubs stand out while a note with 200 links doesn't swallow the map.
+    /// 0 links → 0.6, 1 → 1.0, 3 → 1.4, 7 → 1.8, 15 → 2.2, 31 → 2.6, 127+ → 3.4.
+    static func weight(_ degree: Int) -> CGFloat { 0.6 + 0.4 * min(log2(1 + CGFloat(degree)), 7) }
+
+    static func lensColor(_ lens: MapModel.Lens) -> Color {
+        switch lens {
+        case .suggestions: Color(hex: 0xF5C451)
+        case .orphans: Theme.ink
+        case .forgotten: Color(hex: 0x8FB3FF)
         }
     }
 
