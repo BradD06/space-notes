@@ -171,7 +171,7 @@ struct MarkdownStyler {
                     i = last + 1
                     continue
                 }
-                if dataviewEnabled, !revealAll, lang.lowercased() == Dataview.language, j < lines.count, !touches(range) {
+                if dataviewEnabled, !revealAll, [Dataview.language, DataviewJS.language].contains(lang.lowercased()), j < lines.count, !touches(range) {
                     reserve(storage, ns: ns, lines: Array(lines[i...last]), height: dataviewHeights[ns.substring(with: range)] ?? 120)
                     blocks.append(EditorBlock(kind: .dataview, range: range))
                     i = last + 1

@@ -8,13 +8,33 @@ final class DataviewIndexCache {
 
     private var pages: [String: (modified: Date, page: DVPage)] = [:]
     private var built: (stamp: Int, root: URL, index: DVIndex)?
+    private var listed: (stamp: Int, files: [String], folders: [String])?
+
+    /// Changes whenever a note is added, removed or saved.
+    var stamp: Int? { built?.stamp }
+
+    func peekStamp(_ vault: VaultStore) -> Int {
+        var h = Hasher()
+        h.combine(vault.rootURL)
+        for n in vault.cosmos.notes.values.sorted(by: { $0.id < $1.id }) { h.combine(n.id); h.combine(n.modified) }
+        h.combine(vault.cosmos.folders.count)
+        return h.finalize()
+    }
+
+    /// All files and folders of the vault (for ```dataviewjs), listed again when notes change.
+    func listing(_ vault: VaultStore) -> (files: [String], folders: [String]) {
+        guard let root = vault.rootURL else { return ([], []) }
+        let stamp = peekStamp(vault)
+        if let l = listed, l.stamp == stamp { return (l.files, l.folders) }
+        let l = DataviewJS.listing(root: root)
+        listed = (stamp, l.files, l.folders)
+        return l
+    }
 
     func index(_ vault: VaultStore) -> DVIndex {
         guard let root = vault.rootURL else { return DVIndex(pages: []) }
         let notes = vault.cosmos.notes.values.filter { $0.id.lowercased().hasSuffix(".md") }
-        var h = Hasher()
-        for n in notes.sorted(by: { $0.id < $1.id }) { h.combine(n.id); h.combine(n.modified) }
-        let stamp = h.finalize()
+        let stamp = peekStamp(vault)
         if let b = built, b.stamp == stamp, b.root == root { return b.index }
         if built?.root != root { pages = [:] }
         var seen = Set<String>()
@@ -41,6 +61,9 @@ final class DataviewModel {
     var noteID: String?
     @ObservationIgnored var onOpen: ((String) -> Void)?
     @ObservationIgnored var onToggle: ((TaskItem) -> Void)?
+    /// The open note's own text, read from and written to its editor (```dataviewjs).
+    @ObservationIgnored var onRead: ((String) -> String?)?
+    @ObservationIgnored var onWrite: ((String, String) -> Bool)?
     /// Puts the caret into the block, which shows its Markdown again.
     @ObservationIgnored var onEdit: (() -> Void)?
     @ObservationIgnored var onHeight: ((CGFloat) -> Void)?
@@ -51,9 +74,72 @@ struct DataviewView: View {
     @Bindable var model: DataviewModel
     @Environment(VaultStore.self) private var vault
     @State private var showAll = false
+    @State private var jsHeight: CGFloat = 60
+    @State private var hover = false
     private static let pageSize = 50
 
     var body: some View {
+        if DataviewJS.isJS(model.query) { script } else { query }
+    }
+
+    // MARK: ```dataviewjs
+
+    private var script: some View {
+        let _ = vault.cosmos                  // fresh pages for the script when notes change
+        return DataviewJSView(code: model.query, noteID: model.noteID, vault: vault, actions: actions, height: $jsHeight)
+            .frame(width: model.width, height: jsHeight)
+            .overlay(alignment: .topTrailing) {
+                editButton
+                    .opacity(hover ? 1 : 0)
+                    .offset(y: -2)
+            }
+            .onHover { hover = $0 }
+            .padding(.vertical, 4)
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { model.onHeight?(g.size.height) }
+                    .onChange(of: g.size.height) { _, h in model.onHeight?(h) }
+            })
+    }
+
+    private var actions: DataviewJSActions {
+        let model = model, vault = vault
+        return DataviewJSActions(
+            read: { path in model.onRead?(path) },
+            write: { path, text in
+                if model.onWrite?(path, text) == true { return }
+                vault.writeFile(path, text: text)
+            },
+            toggle: { path, line in
+                let task = TaskItem(path: path, line: line, status: " ", text: "", description: "")
+                if let t = model.onToggle { t(task) } else { vault.toggle(task) }
+            },
+            open: { path in
+                var link = path
+                if let hash = link.firstIndex(of: "#") { link = String(link[..<hash]) }
+                if link.lowercased().hasSuffix(".md") || link.contains("/") {
+                    link = ((link as NSString).lastPathComponent as NSString).deletingPathExtension
+                }
+                model.onOpen?(link)
+            })
+    }
+
+    private var editButton: some View {
+        Button { model.onEdit?() } label: {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.muted)
+                .frame(width: 24, height: 22)
+                .background(Capsule().fill(Theme.surfaceHigh.opacity(0.9)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Показать код виджета")
+    }
+
+    // MARK: ```dataview
+
+    @ViewBuilder private var query: some View {
         let _ = vault.cosmos                  // re-run when any note changes
         let result = Dataview.run(model.query, index: DataviewIndexCache.shared.index(vault), current: model.noteID)
         VStack(alignment: .leading, spacing: 8) {
@@ -103,16 +189,7 @@ struct DataviewView: View {
                 Text("\(result.count)").font(.system(size: 11.5)).foregroundStyle(Theme.muted.opacity(0.7))
             }
             Spacer(minLength: 8)
-            Button { model.onEdit?() } label: {
-                Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: 24, height: 22)
-                    .background(Capsule().fill(Color.white.opacity(0.06)))
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .help("Изменить запрос Dataview")
+            editButton
         }
         .font(.system(size: 11.5))
     }
@@ -308,6 +385,13 @@ struct TaskDates: View {
 
 /// Writes a ticked task back to its note (the open note's own tasks go through its editor instead).
 extension VaultStore {
+    /// A note is saved as usual; any other file (JSON a widget keeps, say) is written as it is.
+    func writeFile(_ path: String, text: String) {
+        if cosmos.notes[path] != nil { save(path, text: text); return }
+        guard let url = url(for: path) else { return }
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     func toggle(_ task: TaskItem) {
         var lines = text(of: task.path).components(separatedBy: "\n")
         guard lines.indices.contains(task.line), Tasks.item(lines[task.line], path: task.path, line: task.line) != nil else { return }
@@ -366,6 +450,15 @@ final class DataviewOverlays {
                 model = DataviewModel()
                 model.onOpen = { [weak self] link in self?.onOpen(link) }
                 model.onToggle = { [weak self] task in self?.toggle(task) }
+                model.onRead = { [weak self] path in
+                    guard let self, path == self.noteID() else { return nil }
+                    return self.textView?.string
+                }
+                model.onWrite = { [weak self] path, text in
+                    guard let self, path == self.noteID() else { return false }
+                    self.replaceAll(with: text)
+                    return true
+                }
                 model.onEdit = { [weak self, weak model] in
                     guard let self, let model else { return }
                     self.edit(model.query)
@@ -407,6 +500,17 @@ final class DataviewOverlays {
         let firstLine = (query as NSString).range(of: "\n")
         tv.window?.makeFirstResponder(tv)
         tv.setSelectedRange(NSRange(location: r.location + (firstLine.location == NSNotFound ? 0 : firstLine.location + 1), length: 0))
+    }
+
+    /// A widget rewrote this very note: the editor takes the new text as one undoable change.
+    private func replaceAll(with text: String) {
+        guard let tv = textView, tv.string != text else { return }
+        let all = NSRange(location: 0, length: (tv.string as NSString).length)
+        let sel = tv.selectedRange()
+        guard tv.shouldChangeText(in: all, replacementString: text) else { return }
+        tv.textStorage?.replaceCharacters(in: all, with: text)
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: min(sel.location, (text as NSString).length), length: 0))
     }
 
     /// A task of this very note is ticked through the editor (one undoable change); others are saved to their file.
