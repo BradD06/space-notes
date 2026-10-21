@@ -237,7 +237,7 @@ extension SpaceTextView {
     }
 
     func updateHover(at point: NSPoint) {
-        guard let gutter, draggingBlock == nil else { return }
+        guard let gutter, draggingBlock == nil, dragSource == nil else { return }
         // Only near the text column (and its gutter), not far out on the sides.
         let o = textContainerOrigin
         let width = textContainer?.size.width ?? bounds.width
@@ -270,6 +270,8 @@ extension SpaceTextView {
     func beginBlockDrag(_ group: Range<Int>) {
         guard !group.isEmpty, group.lowerBound >= 0, group.upperBound <= blocks.count else { return }
         draggingBlock = group
+        dragSource = .note(group)
+        dropSpot = nil
         dropTarget = nil
         selectionShade?.isHidden = true
         dragShade?.frame = rect(of: group).insetBy(dx: -6, dy: -3)
@@ -278,12 +280,58 @@ extension SpaceTextView {
         NSCursor.closedHand.set()
     }
 
+    /// Starts dragging blocks that sit inside a column (by the handle the columns view shows for them).
+    func beginColumnDrag(columns k: Int, column: Int, range: Range<Int>, shade: NSRect) {
+        let all = blocks
+        let indices = all.indices.filter { all[$0].kind == .columns }
+        guard indices.indices.contains(k) else { return }
+        draggingBlock = nil
+        dragSource = .column(block: indices[k], column: column, range: range)
+        dropSpot = nil
+        dropTarget = nil
+        dropBeside = nil
+        hideHandle()
+        selectionShade?.isHidden = true
+        dragShade?.frame = shade.insetBy(dx: -6, dy: -3)
+        dragShade?.alphaValue = 1
+        dragShade?.isHidden = false
+        NSCursor.closedHand.set()
+    }
+
     func updateBlockDrag(_ event: NSEvent) {
-        guard let group = draggingBlock else { return }
+        guard let source = dragSource else { return }
+        let group: Range<Int> = { if case .note(let g) = source { return g }; return -1..<(-1) }()
         let p = convert(event.locationInWindow, from: nil)
         let all = blocks
         let o = textContainerOrigin
         let width = textContainer?.size.width ?? 300
+        let columnsIndices = all.indices.filter { all[$0].kind == .columns }
+
+        // Over columns: into a column, between its blocks (or as a new column at the columns' outer edges).
+        for (k, v) in columnViews.enumerated() where columnsIndices.indices.contains(k) && v.frame.insetBy(dx: 0, dy: -4).contains(p) {
+            let blockIndex = columnsIndices[k]
+            if group.contains(blockIndex) { break }
+            let local = v.convert(p, from: self)
+            if local.x > v.bounds.width - 14 || local.x < 6 {
+                let right = local.x > v.bounds.width / 2
+                dropSpot = .newColumn(block: blockIndex, at: right ? v.columns.count : 0)
+                dropTarget = nil
+                dropBeside = nil
+                dropLine?.frame = NSRect(x: right ? v.frame.maxX - 2 : v.frame.minX - 6, y: v.frame.minY - 2, width: 3, height: v.frame.height + 4)
+                dropLine?.isHidden = false
+                gutter?.isHidden = true
+                return
+            }
+            if let spot = v.dropSpot(at: local) {
+                dropSpot = .column(block: blockIndex, column: spot.column, before: spot.before)
+                dropTarget = nil
+                dropBeside = nil
+                dropLine?.frame = v.convert(spot.line, to: self)
+                dropLine?.isHidden = false
+                gutter?.isHidden = true
+                return
+            }
+        }
 
         // Near the right (or left) edge of another block: drop it beside that block, as a column.
         let right = p.x > o.x + width * 0.7, left = p.x > o.x + 8 && p.x < o.x + width * 0.12
@@ -292,6 +340,7 @@ extension SpaceTextView {
             let r = rect(of: all[i])
             if p.y >= r.minY - 6, p.y <= r.maxY + 6 {
                 dropBeside = (i, right)
+                dropSpot = .beside(block: i, right: right)
                 dropTarget = nil
                 dropLine?.frame = NSRect(x: right ? r.maxX - 2 : r.minX - 6, y: r.minY - 2, width: 3, height: r.height + 4)
                 dropLine?.isHidden = false
@@ -313,6 +362,7 @@ extension SpaceTextView {
             }
         }
         dropTarget = target
+        dropSpot = .note(before: target)
         // Dropping right where the blocks already are does nothing, so no line there.
         let still = target >= group.lowerBound && target <= group.upperBound
         dropLine?.frame = NSRect(x: o.x - 4, y: y - 1.5, width: (textContainer?.size.width ?? 300) + 8, height: 3)
@@ -322,12 +372,24 @@ extension SpaceTextView {
 
     func endBlockDrag() {
         let group = draggingBlock, to = dropTarget, beside = dropBeside
+        let source = dragSource, spot = dropSpot
         draggingBlock = nil
         dropTarget = nil
         dropBeside = nil
+        dragSource = nil
+        dropSpot = nil
         dropLine?.isHidden = true
         dragShade?.isHidden = true
         NSCursor.iBeam.set()
+        // Into or out of columns: the general move (empty columns disappear, a lone column unwraps).
+        let simple: Bool = {
+            guard case .note? = source else { return false }
+            switch spot { case .note?, .beside?, nil: return true; default: return false }
+        }()
+        if !simple {
+            if let source, let spot, let moved = Blocks.move(string, from: source, to: spot) { replaceAll(with: moved) }
+            return
+        }
         if let group, let beside, let made = Blocks.makeColumns(string, target: beside.index, moving: group, right: beside.right) {
             replaceAll(with: made.text)
             selectBlocks(from: made.index, to: made.index)

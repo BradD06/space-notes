@@ -20,8 +20,105 @@ final class ColumnsView: NSView, NSTextViewDelegate {
         return s
     }()
     static let gap: CGFloat = 32
+    /// The handle of the block under the pointer inside a column: drag it to another column, out, or beside.
+    private lazy var grip: GutterButton = {
+        let g = GutterButton(symbol: "grip", help: "Перетащите блок: в другую колонку, выше или ниже, наружу")
+        g.symbolSize = 9
+        g.isHidden = true
+        g.onMouseDown = { [weak self] event in self?.trackGrip(event) }
+        return g
+    }()
+
+    /// Is this window point over the handle (so leaving a column towards it keeps it)?
+    func isOverGrip(_ windowPoint: NSPoint) -> Bool {
+        guard !grip.isHidden, let sv = grip.superview else { return false }
+        return grip.frame.insetBy(dx: -6, dy: -6).contains(sv.convert(windowPoint, from: nil))
+    }
+    private var hovered: (column: Int, block: Int)?
+
+    override func removeFromSuperview() {
+        grip.removeFromSuperview()
+        super.removeFromSuperview()
+    }
 
     override var isFlipped: Bool { true }
+
+    // MARK: Blocks inside the columns
+
+    /// The rectangles of a column's blocks, in this view's coordinates.
+    func blockRects(_ column: Int) -> [NSRect] {
+        guard editors.indices.contains(column) else { return [] }
+        let e = editors[column]
+        guard let lm = e.layoutManager, let c = e.textContainer else { return [] }
+        let o = e.textContainerOrigin
+        return Blocks.blocks(in: e.string).map { b in
+            let glyphs = lm.glyphRange(forCharacterRange: b.range, actualCharacterRange: nil)
+            var r = lm.boundingRect(forGlyphRange: glyphs, in: c)
+            if b.range.length == 0 { r = lm.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil) }
+            return NSRect(x: e.frame.minX, y: e.frame.minY + o.y + r.minY, width: e.frame.width, height: r.height)
+        }
+    }
+
+    /// Where blocks dropped at this point go: which column, before which of its blocks, and the line to show.
+    func dropSpot(at p: NSPoint) -> (column: Int, before: Int, line: NSRect)? {
+        guard let j = editors.firstIndex(where: { p.x >= $0.frame.minX - Self.gap / 2 && p.x <= $0.frame.maxX + Self.gap / 2 }) else { return nil }
+        let e = editors[j]
+        let rects = blockRects(j)
+        var before = rects.count
+        var y = (rects.last?.maxY ?? e.frame.minY) + 3
+        for (i, r) in rects.enumerated() where p.y < r.midY {
+            before = i
+            y = i > 0 ? (rects[i - 1].maxY + r.minY) / 2 : r.minY - 3
+            break
+        }
+        return (j, before, NSRect(x: e.frame.minX - 4, y: y - 1.5, width: e.frame.width + 8, height: 3))
+    }
+
+    /// The pointer moved over a column's editor: its block gets a handle on the left.
+    func hover(_ e: NSTextView, at p: NSPoint) {
+        guard host?.dragSource == nil, let j = editors.firstIndex(where: { $0 === e }) else { return }
+        let local = convert(p, from: e)
+        let rects = blockRects(j)
+        guard let i = rects.firstIndex(where: { local.y >= $0.minY - 2 && local.y <= $0.maxY + 2 }) else { hideGrip(); return }
+        hovered = (j, i)
+        let r = rects[i]
+        // The handle lives in the note's editor: left of the first column it is outside this view.
+        guard let host else { return }
+        if grip.superview !== host { grip.removeFromSuperview(); host.addSubview(grip) }
+        let inSelf = NSRect(x: r.minX - 20, y: r.minY + max(0, (min(r.height, 40) - 22) / 2), width: 18, height: 22)
+        grip.frame = host.convert(inSelf, from: self)
+        grip.isHidden = false
+    }
+
+    func hideGrip() {
+        guard host?.dragSource == nil else { return }
+        hovered = nil
+        grip.isHidden = true
+    }
+
+    private func trackGrip(_ down: NSEvent) {
+        guard let host, let window, let h = hovered else { return }
+        let start = down.locationInWindow
+        var dragging = false
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if event.type == .leftMouseUp { break }
+            let p = event.locationInWindow
+            if !dragging, hypot(p.x - start.x, p.y - start.y) > 4 {
+                dragging = true
+                let rects = blockRects(h.column)
+                let shade = rects.indices.contains(h.block) ? convert(rects[h.block], to: host) : .zero
+                host.beginColumnDrag(columns: index, column: h.column, range: h.block..<(h.block + 1), shade: shade)
+                grip.isHidden = true
+            }
+            if dragging {
+                host.autoscroll(with: event)
+                host.updateBlockDrag(event)
+            }
+        }
+        if dragging { host.endBlockDrag() }
+        hovered = nil
+        grip.isHidden = true
+    }
 
     var columns: [String] { editors.map(\.string) }
 
@@ -226,6 +323,26 @@ final class ColumnsView: NSView, NSTextViewDelegate {
 /// The editor of one column.
 final class ColumnTextView: NSTextView {
     weak var owner: ColumnsView?
+
+    // Moving over a block shows its handle (see ColumnsView.hover).
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if !trackingAreas.contains(where: { ($0.owner as AnyObject?) === self && $0.options.contains(.mouseMoved) }) {
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+        }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        owner?.hover(self, at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        guard let owner else { return }
+        // Leaving towards the handle keeps it.
+        if !owner.isOverGrip(event.locationInWindow) { owner.hideGrip() }
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, event.modifierFlags.contains(.command) else { return super.performKeyEquivalent(with: event) }

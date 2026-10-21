@@ -481,6 +481,9 @@ final class SpaceTextView: NSTextView {
     var lastCaret = 0
     /// While dragging a block: dropped next to this block, it makes columns.
     var dropBeside: (index: Int, right: Bool)?
+    /// What's being dragged (blocks of the note, or blocks inside a column) and where it would land.
+    var dragSource: BlockSpot?
+    var dropSpot: BlockDrop?
     /// The properties panel over the frontmatter (see Properties.swift).
     var propertiesHost: NSHostingView<PropertiesView>?
     var propertiesModel: PropertiesModel?
@@ -545,6 +548,9 @@ final class SpaceTextView: NSTextView {
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         updateHover(at: convert(event.locationInWindow, from: nil))
+        // Out of the columns (and not on their handle): their block handle goes.
+        let p = convert(event.locationInWindow, from: nil)
+        for v in columnViews where !v.frame.contains(p) && !v.isOverGrip(event.locationInWindow) { v.hideGrip() }
     }
 
     override func mouseExited(with event: NSEvent) {

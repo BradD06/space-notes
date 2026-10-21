@@ -460,3 +460,138 @@ nonisolated enum Blocks {
         return join(ps)
     }
 }
+
+// MARK: - Moving blocks anywhere (Notion-style)
+
+/// Where blocks being moved are: in the note itself, or inside one column of a columns block.
+nonisolated enum BlockSpot: Equatable, Sendable {
+    case note(Range<Int>)
+    /// `block`: the columns block's index in the note; `column`: which column; `range`: blocks in that column.
+    case column(block: Int, column: Int, range: Range<Int>)
+}
+
+/// Where they go: between the note's blocks, between a column's blocks, as a new column, or beside a block.
+nonisolated enum BlockDrop: Equatable, Sendable {
+    case note(before: Int)
+    case column(block: Int, column: Int, before: Int)
+    case newColumn(block: Int, at: Int)
+    case beside(block: Int, right: Bool)
+}
+
+extension Blocks {
+    /// Stands in for blocks that are moving until they've been put at their new place.
+    private static let sentinel = "\u{E000}space-moving-block"
+
+    /// Moves blocks from anywhere to anywhere: out of a column, into another column or a new one, beside a block.
+    /// A column left empty disappears, and columns left with one column become ordinary blocks again.
+    /// Returns nil when nothing changes (or the move can't be done, e.g. columns into a column).
+    static func move(_ text: String, from: BlockSpot, to: BlockDrop) -> String? {
+        // 1. Take the moving blocks' Markdown and leave a stand-in block for each (indices stay valid).
+        var ps = pieces(text)
+        var slots = ps.indices.filter { if case .block = ps[$0] { true } else { false } }
+        func lines(_ i: Int) -> [String] { if case .block(let l) = ps[slots[i]] { l } else { [] } }
+        var payload: [String] = []
+        switch from {
+        case .note(let range):
+            guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= slots.count else { return nil }
+            for i in range { payload.append(lines(i).joined(separator: "\n")); ps[slots[i]] = .block([sentinel]) }
+        case .column(let b, let c, let range):
+            guard slots.indices.contains(b), isColumnsHeader(lines(b).first ?? "") else { return nil }
+            var cols = columns(of: lines(b))
+            guard cols.indices.contains(c) else { return nil }
+            var cps = pieces(cols[c])
+            let cslots = cps.indices.filter { if case .block = cps[$0] { true } else { false } }
+            guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= cslots.count else { return nil }
+            for i in range {
+                if case .block(let l) = cps[cslots[i]] { payload.append(l.joined(separator: "\n")) }
+                cps[cslots[i]] = .block([sentinel])
+            }
+            cols[c] = join(cps)
+            ps[slots[b]] = .block(columnsMarkdown(cols))
+        }
+        // Columns can't go inside columns.
+        let movesColumns = payload.contains { isColumnsHeader($0.components(separatedBy: "\n").first ?? "") }
+        if case .note = to {} else if movesColumns { return nil }
+
+        // 2. Put them at the new place.
+        switch to {
+        case .note(let before):
+            let at = min(max(before, 0), slots.count)
+            var insert: [Piece] = []
+            for p in payload { insert.append(.block(p.components(separatedBy: "\n"))); insert.append(.gap([""])) }
+            if at < slots.count {
+                ps.insert(contentsOf: insert, at: slots[at])
+            } else {
+                if case .block? = ps.last { ps.append(.gap([""])) }
+                insert.removeLast()
+                ps.append(contentsOf: insert)
+            }
+        case .column(let b, let c, let before):
+            guard slots.indices.contains(b), isColumnsHeader(lines(b).first ?? "") else { return nil }
+            var cols = columns(of: lines(b))
+            guard cols.indices.contains(c) else { return nil }
+            cols[c] = insert(payload, into: cols[c], before: before)
+            ps[slots[b]] = .block(columnsMarkdown(cols))
+        case .newColumn(let b, let at):
+            guard slots.indices.contains(b), isColumnsHeader(lines(b).first ?? "") else { return nil }
+            var cols = columns(of: lines(b))
+            cols.insert(payload.joined(separator: "\n\n"), at: min(max(at, 0), cols.count))
+            ps[slots[b]] = .block(columnsMarkdown(cols))
+        case .beside(let b, let right):
+            guard slots.indices.contains(b) else { return nil }
+            let target = lines(b)
+            guard target != [sentinel] else { return nil }                 // beside itself
+            let moved = payload.joined(separator: "\n\n")
+            var cols = isColumnsHeader(target.first ?? "") ? columns(of: target) : [target.joined(separator: "\n")]
+            if right { cols.append(moved) } else { cols.insert(moved, at: 0) }
+            ps[slots[b]] = .block(columnsMarkdown(cols))
+        }
+
+        // 3. Remove the stand-ins (in the note and in every column) and tidy up the columns they leave.
+        var out = removeSentinels(join(ps))
+        ps = pieces(out)
+        slots = ps.indices.filter { if case .block = ps[$0] { true } else { false } }
+        for s in slots.reversed() {
+            guard case .block(let l) = ps[s], isColumnsHeader(l.first ?? "") else { continue }
+            let cols = columns(of: l).map(removeSentinels)
+            let kept = cols.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if kept.count == cols.count && cols == columns(of: l) { continue }
+            if kept.isEmpty {
+                ps[s] = .block([sentinel])
+            } else if kept.count == 1 {
+                ps[s] = .block(kept[0].components(separatedBy: "\n"))
+            } else {
+                ps[s] = .block(columnsMarkdown(kept))
+            }
+        }
+        out = removeSentinels(join(ps))
+        return out == text ? nil : out
+    }
+
+    /// The blocks put into a text before its block `before` (or at the end), with blank lines between.
+    private static func insert(_ payload: [String], into text: String, before: Int) -> String {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return payload.joined(separator: "\n\n") }
+        var ps = pieces(text)
+        let slots = ps.indices.filter { if case .block = ps[$0] { true } else { false } }
+        var insert: [Piece] = []
+        for p in payload { insert.append(.block(p.components(separatedBy: "\n"))); insert.append(.gap([""])) }
+        if before < slots.count {
+            ps.insert(contentsOf: insert, at: slots[max(0, before)])
+        } else {
+            while case .gap? = ps.last { ps.removeLast() }
+            ps.append(.gap([""]))
+            insert.removeLast()
+            ps.append(contentsOf: insert)
+        }
+        return join(ps)
+    }
+
+    /// Drops the stand-in blocks (and a blank line that went with each).
+    private static func removeSentinels(_ text: String) -> String {
+        var t = text
+        while let i = blocks(in: t).firstIndex(where: { lines(t)[$0.lines] == [sentinel] }) {
+            t = delete(t, index: i)
+        }
+        return t
+    }
+}
