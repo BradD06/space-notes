@@ -96,13 +96,24 @@ final class Workspace {
     private let saveKey = "space.workspace"
 
     init() {
-        let pane = PaneNode()
+        let pane = PaneNode(tabs: [.dashboard])
         root = pane
         focusedID = pane.id
         if let restored = Self.load(key: saveKey) {
             root = restored
             focusedID = Self.firstPane(in: restored)?.id ?? restored.id
         }
+        startOnDashboard()
+    }
+
+    /// The app always opens on the dashboard: its tab if one is open anywhere, otherwise a new first tab
+    /// in the first pane. The other tabs from last time stay where they were.
+    private func startOnDashboard() {
+        guard !reveal(.dashboard), let pane = Self.firstPane(in: root) else { return }
+        pane.tabs.insert(.dashboard, at: 0)
+        pane.active = 0
+        focusedID = pane.id
+        save()
     }
 
     var focused: PaneNode? { Self.find(focusedID, in: root) }
@@ -147,7 +158,7 @@ final class Workspace {
         walk(root)
         return panes.first { p in
             guard p.id != paneID, case .note(let id)? = p.activeTab else { return false }
-            return !Books.isBook(id)
+            return Documents.isNote(id)
         }
     }
 
@@ -426,7 +437,7 @@ final class Workspace {
         // The focused pane first (when it isn't the book's own), then the others.
         if let i = panes.firstIndex(where: { $0.id == focusedID }) { panes.insert(panes.remove(at: i), at: 0) }
         for p in panes where p.id != paneID {
-            if case .note(let id)? = p.activeTab, !Books.isBook(id) { return id }
+            if case .note(let id)? = p.activeTab, Documents.isNote(id) { return id }
         }
         return nil
     }

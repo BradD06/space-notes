@@ -163,6 +163,8 @@ private struct PaneView: View {
         case .note(let id):
             if Books.isBook(id) {
                 BookView(bookID: id).id(id)
+            } else if Documents.isDocument(id) {
+                DocumentView(docID: id).id(id)
             } else {
                 NoteView(noteID: id).id(id)
             }
@@ -283,7 +285,7 @@ private struct TabBar: View {
         switch tab {
         case .map: "sparkles"
         case .dashboard: "rectangle.3.group"
-        case .note(let id): Books.isBook(id) ? "book.closed" : "doc.text"
+        case .note(let id): Documents.icon(for: id)
         }
     }
 

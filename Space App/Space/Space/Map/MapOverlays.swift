@@ -36,6 +36,13 @@ struct MapTopBar: View {
                 .buttonStyle(.glass)
                 .tip("История: звёзды появляются в том порядке, в каком создавались заметки")
 
+                Button { model.lens = model.lens == nil ? .suggestions : nil } label: {
+                    Image(systemName: model.lens == nil ? "lightbulb" : "lightbulb.fill").frame(width: 20, height: 20)
+                }
+                .buttonStyle(.glass)
+                .tint(model.lens == nil ? nil : MapRenderer.lensColor(.suggestions))
+                .tip("Подсказки: что связать, сироты и забытые звёзды")
+
                 if model.focusedStar != nil {
                     Button { model.replayCascade() } label: {
                         Label("Каскад", systemImage: "dot.radiowaves.left.and.right")
@@ -232,6 +239,19 @@ struct FocusPanel: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+                        }
+                    }
+                    let missing = InsightsCache.insights(vault).suggestionsFor[id] ?? []
+                    if !missing.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "link.badge.plus")
+                                    .frame(width: 22, height: 22)
+                                    .foregroundStyle(MapRenderer.lensColor(.suggestions))
+                                Text("МОЖНО СВЯЗАТЬ · \(missing.count)").font(Theme.mono(10)).foregroundStyle(Theme.muted)
+                            }
+                            .padding(.bottom, 4)
+                            ForEach(missing, id: \.self) { s in SuggestionRow(suggestion: s, from: id) }
                         }
                     }
                 }

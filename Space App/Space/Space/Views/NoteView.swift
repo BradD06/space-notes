@@ -51,7 +51,9 @@ struct NoteView: View {
                            state: editor,
                            hideProperties: hideProperties,
                            vault: vault,
+                           noteURL: file ?? vault.url(for: noteID),
                            noteID: file == nil ? noteID : nil)
+                .editorMedia(editor)
                 .overlay(alignment: .topLeading) { LinkSuggestions(state: editor) }
                 .overlay(alignment: .topLeading) { SlashMenu(state: editor) }
                 .overlay(alignment: .topLeading) { SelectionBar(state: editor) }
@@ -97,6 +99,43 @@ struct NoteView: View {
             let gap = text.isEmpty || text.hasSuffix("\n\n") ? "" : (text.hasSuffix("\n") ? "\n" : "\n\n")
             text += gap + add
         }
+        // Changed in Obsidian, Finder or by iCloud while open.
+        .onReceive(NotificationCenter.default.publisher(for: .spaceVaultChangedOutside)) { _ in reloadFromDisk() }
+    }
+
+    /// Takes the text from disk when another app changed the file. Edits not saved yet are kept: merged with
+    /// the outside change when they touch other lines, otherwise the outside version is kept as a copy beside it.
+    private func reloadFromDisk() {
+        guard let url = file ?? vault.url(for: noteID),
+              let disk = try? String(contentsOf: url, encoding: .utf8), disk != lastSaved else { return }
+        if text == lastSaved || text == disk {
+            saveTask?.cancel()
+            lastSaved = disk
+            text = disk
+        } else if let merged = TextMerge.merge(base: lastSaved, mine: text, theirs: disk) {
+            lastSaved = disk
+            text = merged                        // saved shortly, like any edit
+        } else {
+            keepConflictCopy(disk, of: url)
+            lastSaved = disk
+            save(text)
+        }
+    }
+
+    /// "Note (изменено вне Space).md" next to the note, with the other app's version.
+    private func keepConflictCopy(_ other: String, of url: URL) {
+        let dir = url.deletingLastPathComponent(), name = url.deletingPathExtension().lastPathComponent
+        var target = dir.appending(path: "\(name) (изменено вне Space).md"), n = 2
+        while FileManager.default.fileExists(atPath: target.path) {
+            target = dir.appending(path: "\(name) (изменено вне Space) \(n).md"); n += 1
+        }
+        do {
+            try other.write(to: target, atomically: true, encoding: .utf8)
+            vault.errorMessage = "«\(name)» изменили в другом приложении, пока здесь были несохранённые правки. Твои правки остались в заметке, другая версия сохранена рядом: «\(target.deletingPathExtension().lastPathComponent)»."
+        } catch {
+            vault.errorMessage = "«\(name)» изменили в другом приложении. Твои правки сохранены, но другую версию не удалось сохранить рядом: \(error.localizedDescription)"
+        }
+        Task { await vault.reload() }
     }
 
     /// The note's own tools, inside the note (not in the window toolbar) so every pane has its own.
@@ -110,6 +149,8 @@ struct NoteView: View {
                 Button("Код", systemImage: "chevron.left.forwardslash.chevron.right") { editor.insertMarkup?("`", "`") }
                 Divider()
                 Button("Ссылка на звезду  ⌘K", systemImage: "link") { editor.insertMarkup?("[[", "]]") }
+                Button("Ссылка на сайт  ⌘⇧K", systemImage: "globe") { editor.insertWebLink?() }
+                Button("Картинка…", systemImage: "photo") { editor.pickingImage = true }
                 Button("Задача", systemImage: "checkmark.square") { editor.insertMarkup?("- [ ] ", "") }
                 Button("Цитата", systemImage: "text.quote") { editor.insertMarkup?("> ", "") }
                 Button("Выноска", systemImage: "exclamationmark.bubble") { editor.insertMarkup?("> [!note] ", "") }
@@ -169,13 +210,16 @@ struct NoteView: View {
     }
 
     /// Click on [[Title]]: open that star, or create it next to this one if it doesn't exist yet (like Obsidian).
-    /// "Book.pdf#page=3" → "Book"; "Note.md" → "Note".
+    /// "Book.pdf#page=3" → "Book"; "Note.md" → "Note"; "Report.docx" → "Report".
     static func bareTitle(_ link: String) -> String {
+        Documents.strippingExtension(fileName(link)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// "folder/Book.pdf#page=3" → "Book.pdf".
+    private static func fileName(_ link: String) -> String {
         var t = link
         if let hash = t.firstIndex(of: "#") { t = String(t[..<hash]) }
-        if t.lowercased().hasSuffix(".pdf") { t.removeLast(4) }
-        if t.lowercased().hasSuffix(".md") { t.removeLast(3) }
-        return t.trimmingCharacters(in: .whitespaces)
+        return (t as NSString).lastPathComponent.trimmingCharacters(in: .whitespaces)
     }
 
     private func openLink(_ link: String) {
@@ -183,7 +227,10 @@ struct NoteView: View {
         flush()
         let c = vault.cosmos
         let title = Self.bareTitle(link)
-        if let id = c.notes.values.first(where: { $0.title.lowercased() == title.lowercased() })?.id {
+        // [[Report.docx]] means that very file, even if a note "Report" sits next to it.
+        let file = Self.fileName(link).lowercased()
+        let exact = Documents.namesFile(link) ? c.notes.keys.first { ($0 as NSString).lastPathComponent.lowercased() == file } : nil
+        if let id = exact ?? c.notes.values.first(where: { $0.title.lowercased() == title.lowercased() })?.id {
             if Books.isBook(id) {
                 // "#page=N&q=words": the book opens at that page and finds the quote there.
                 if let r = link.range(of: "#page="), let page = Int(link[r.upperBound...].prefix(while: \.isNumber)) {
@@ -198,8 +245,9 @@ struct NoteView: View {
             vault.selection = .note(id)
             return
         }
-        guard !link.lowercased().contains(".pdf") else {
-            vault.errorMessage = "Книга «\(title)» не найдена в хранилище."
+        guard !Documents.namesFile(link) else {
+            vault.errorMessage = Books.isBook(Self.fileName(link)) ? "Книга «\(title)» не найдена в хранилище."
+                                                                   : "Файл «\(Self.fileName(link))» не найден в хранилище."
             return
         }
         let universe = c.universeOf[noteID] ?? ""
