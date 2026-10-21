@@ -24,10 +24,17 @@ final class EditorState {
     @ObservationIgnored var turnInto: ((BlockKind) -> Void)?
 
     var slashVisible: Bool { slashQuery != nil && !slashItems.isEmpty }
+
+    /// Pictures: the file picker from the note's tools, and what went wrong saving one.
+    var pickingImage = false
+    var mediaError: String?
+    @ObservationIgnored var insertImages: (([URL]) -> Void)?
+    /// `[text](https://…)` around the selection, with the address from the clipboard when it holds one.
+    @ObservationIgnored var insertWebLink: (() -> Void)?
 }
 
-/// Obsidian-style Markdown editor: live preview, clickable [[links]] and checkboxes,
-/// list continuation, `[[` autocomplete, ⌘B / ⌘I / ⌘K.
+/// Obsidian-style Markdown editor: live preview, clickable [[links]] and checkboxes, pictures,
+/// list continuation, `[[` autocomplete (notes, #headings, pictures after `![[`), ⌘B / ⌘I / ⌘K / ⌘⇧K.
 struct MarkdownEditor {
     @Binding var text: String
     var revealAll: Bool
@@ -39,6 +46,8 @@ struct MarkdownEditor {
     var hideProperties: Bool = false
     /// The vault, for ```gallery blocks (their cards show the vault's notes and books).
     var vault: VaultStore? = nil
+    /// The note's file: pictures are found from here and pasted ones are saved next to it.
+    var noteURL: URL? = nil
 }
 
 // MARK: - Logic shared by both platforms
@@ -68,6 +77,14 @@ final class EditorCoordinator: NSObject {
         lastActiveLine = line
         lastRevealAll = parent.revealAll
         styler.resolves = parent.resolves
+        let note = parent.noteURL, root = parent.vault?.rootURL
+        styler.image = { ref in
+            guard EditorImages.isImage(ref), let url = EditorImages.resolve(ref, note: note, root: root) else { return nil }
+            return EditorImages.image(at: url)
+        }
+        if let c = storage.layoutManagers.first?.textContainers.first, c.size.width > 60 {
+            styler.imageWidth = c.size.width - 2 * c.lineFragmentPadding - 8
+        }
         #if os(macOS)
         let host = storage.layoutManagers.first?.firstTextView as? SpaceTextView
         styler.columnsEnabled = host != nil
@@ -110,13 +127,44 @@ final class EditorCoordinator: NSObject {
             if parent.state.linkQuery != nil { parent.state.linkQuery = nil }
             return
         }
-        let list = MarkdownEditing.suggestions(for: q.query, in: parent.titles)
+        let embed = q.range.location >= 3 && text.character(at: q.range.location - 3) == 33     // "![["
+        let list = linkSuggestions(for: q.query, embed: embed, text: text)
         if parent.state.linkQuery != q.query { parent.state.selectedSuggestion = 0 }
         parent.state.linkQuery = q.query
         parent.state.suggestions = list
     }
 
     var popupVisible: Bool { parent.state.linkQuery != nil && !parent.state.suggestions.isEmpty }
+
+    /// Notes for `[[`, pictures first for `![[`, and the headings of a note after `[[Note#` (`[[#` is this note).
+    func linkSuggestions(for query: String, embed: Bool, text: NSString) -> [String] {
+        if let hash = query.firstIndex(of: "#") {
+            let note = String(query[..<hash]), part = String(query[query.index(after: hash)...])
+            let source = note.isEmpty ? text as String : noteText(titled: note)
+            return MarkdownEditing.suggestions(for: part, in: MarkdownEditing.headings(in: source)).map { note + "#" + $0 }
+        }
+        let pool = embed ? EditorImages.names(root: parent.vault?.rootURL) + parent.titles : parent.titles
+        return MarkdownEditing.suggestions(for: query, in: pool)
+    }
+
+    private func noteText(titled title: String) -> String {
+        guard let vault = parent.vault,
+              let id = vault.cosmos.notes.values.first(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame })?.id else { return "" }
+        return vault.text(of: id)
+    }
+
+    /// Saves the pictures next to the note; returns their embed names. Failures go to the editor's alert.
+    func savePictures(_ urls: [URL], data: [(Data, String)]) -> [String] {
+        var names: [String] = []
+        do {
+            for u in urls { names.append(try EditorImages.importFile(u, nextTo: parent.noteURL, root: parent.vault?.rootURL)) }
+            for (d, ext) in data { names.append(try EditorImages.save(d, ext: ext, nextTo: parent.noteURL)) }
+        } catch {
+            parent.state.mediaError = VaultStore.isPermissionError(error)
+                ? "Нет доступа на запись в папку заметки." : error.localizedDescription
+        }
+        return names
+    }
 
     /// "/" typed at the start of a line (or after "+" in the gutter) opens the block menu.
     func updateSlash(text: NSString, selection: NSRange) {
@@ -201,6 +249,11 @@ extension MarkdownEditor: NSViewRepresentable {
             coordinator.chooseSlash(kind, in: tv)
         }
         state.turnInto = { [weak tv] kind in tv?.turnCaretBlock(into: kind) }
+        state.insertImages = { [weak tv, weak coordinator = context.coordinator] urls in
+            guard let tv, let coordinator else { return }
+            coordinator.insertPictures(urls, in: tv)
+        }
+        state.insertWebLink = { [weak tv] in tv?.insertWebLink() }
         tv.installGutter()
 
         if let storage = tv.textStorage { context.coordinator.restyle(storage, selection: tv.selectedRange(), force: true) }
@@ -329,6 +382,16 @@ extension EditorCoordinator: NSTextViewDelegate {
         parent.state.linkQuery = nil
     }
 
+    /// Pictures go in as embeds, each on a line of its own so it shows as a picture.
+    func insertPictures(_ urls: [URL], data: [(Data, String)] = [], in tv: NSTextView) {
+        let names = savePictures(urls, data: data)
+        guard !names.isEmpty else { return }
+        let sel = tv.selectedRange()
+        let snippet = MarkdownEditing.embedSnippet(names, in: tv.string as NSString, at: sel)
+        replace(in: tv, range: sel, with: snippet.text)
+        tv.setSelectedRange(NSRange(location: sel.location + snippet.caret, length: 0))
+    }
+
     private func toggleTask(at location: Int, in tv: NSTextView) {
         let ns = tv.string as NSString
         guard location + 2 < ns.length else { return }
@@ -429,6 +492,12 @@ final class SpaceTextView: NSTextView {
     override func setFrameSize(_ newSize: NSSize) {
         let widthChanged = newSize.width != frame.width
         super.setFrameSize(newSize)
+        if widthChanged, (layoutManager as? BlockLayoutManager)?.blocks.contains(where: \.kind.isImage) == true {
+            DispatchQueue.main.async { [weak self] in        // pictures shrink with the column
+                guard let self, let storage = self.textStorage else { return }
+                self.coordinator?.restyle(storage, selection: self.selectedRange(), force: true)
+            }
+        }
         guard widthChanged, !columnViews.isEmpty || propertiesHost != nil || !galleries.isEmpty else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let lm = self.layoutManager as? BlockLayoutManager else { return }
@@ -520,6 +589,7 @@ final class SpaceTextView: NSTextView {
         case ("b", false): wrapSelection("**", "**"); return true
         case ("i", false): wrapSelection("*", "*"); return true
         case ("k", false): wrapSelection("[[", "]]"); return true
+        case ("k", true): insertWebLink(); return true
         case ("h", true): wrapSelection("==", "=="); return true
         case ("x", true): wrapSelection("~~", "~~"); return true
         default: return super.performKeyEquivalent(with: event)
@@ -537,6 +607,73 @@ final class SpaceTextView: NSTextView {
         guard next != "]]" else { return }
         super.insertText("]]", replacementRange: selectedRange())
         setSelectedRange(NSRange(location: caret, length: 0))
+    }
+
+    // MARK: Pictures and links from the clipboard and drops
+
+    /// Picture files, or picture data (a screenshot, an image copied in a browser), on a pasteboard.
+    private func pictures(on pb: NSPasteboard) -> (urls: [URL], data: [(Data, String)]) {
+        let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
+        let urls = files.filter { EditorImages.isImage($0.lastPathComponent) }
+        if !files.isEmpty { return (urls, []) }
+        // Text with a picture attached (a copied web page) is pasted as text, unless the text is just its address.
+        if let s = pb.string(forType: .string), !MarkdownEditing.isWebAddress(s) { return ([], []) }
+        if let png = pb.data(forType: .png) { return ([], [(png, "png")]) }
+        if let tiff = pb.data(forType: .tiff), let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            return ([], [(png, "png")])
+        }
+        return ([], [])
+    }
+
+    override func paste(_ sender: Any?) {
+        let pb = NSPasteboard.general
+        let found = pictures(on: pb)
+        if !found.urls.isEmpty || !found.data.isEmpty, let coordinator {
+            coordinator.insertPictures(found.urls, data: found.data, in: self)
+            return
+        }
+        // An address pasted over selected text links the text, like Obsidian.
+        if selectedRange().length > 0, let s = pb.string(forType: .string), MarkdownEditing.isWebAddress(s) {
+            let sel = selectedRange()
+            let link = "[\((string as NSString).substring(with: sel))](\(s.trimmingCharacters(in: .whitespacesAndNewlines)))"
+            if shouldChangeText(in: sel, replacementString: link) {
+                textStorage?.replaceCharacters(in: sel, with: link)
+                didChangeText()
+                setSelectedRange(NSRange(location: sel.location + (link as NSString).length, length: 0))
+            }
+            return
+        }
+        super.paste(sender)
+    }
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes + [.fileURL, .png, .tiff]
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let op = super.draggingUpdated(sender)
+        let found = pictures(on: sender.draggingPasteboard)
+        return !found.urls.isEmpty || !found.data.isEmpty ? .copy : op
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let found = pictures(on: sender.draggingPasteboard)
+        guard !found.urls.isEmpty || !found.data.isEmpty, let coordinator else { return super.performDragOperation(sender) }
+        let at = characterIndexForInsertion(at: convert(sender.draggingLocation, from: nil))
+        setSelectedRange(NSRange(location: min(at, (string as NSString).length), length: 0))
+        coordinator.insertPictures(found.urls, data: found.data, in: self)
+        window?.makeFirstResponder(self)
+        return true
+    }
+
+    func insertWebLink() {
+        let sel = selectedRange()
+        let link = MarkdownEditing.webLink(selected: (string as NSString).substring(with: sel),
+                                           clipboard: NSPasteboard.general.string(forType: .string))
+        guard shouldChangeText(in: sel, replacementString: link.text) else { return }
+        textStorage?.replaceCharacters(in: sel, with: link.text)
+        didChangeText()
+        setSelectedRange(NSRange(location: sel.location + link.caret, length: 0))
     }
 
     func wrapSelection(_ open: String, _ close: String) {
@@ -567,6 +704,7 @@ final class SpaceTextView: NSTextView {
 
 #else
 import UIKit
+import UniformTypeIdentifiers
 
 extension MarkdownEditor: UIViewRepresentable {
     func makeCoordinator() -> EditorCoordinator { EditorCoordinator(self) }
@@ -601,6 +739,11 @@ extension MarkdownEditor: UIViewRepresentable {
             coordinator.complete(title, in: tv)
         }
         state.insertMarkup = { [weak tv] open, close in tv?.wrapSelection(open, close) }
+        state.insertImages = { [weak tv, weak coordinator = context.coordinator] urls in
+            guard let tv, let coordinator else { return }
+            coordinator.insertPictures(urls, in: tv)
+        }
+        state.insertWebLink = { [weak tv] in tv?.insertWebLink() }
         context.coordinator.restyle(tv.textStorage, selection: tv.selectedRange, force: true)
         return tv
     }
@@ -676,6 +819,15 @@ extension EditorCoordinator: UITextViewDelegate, UIGestureRecognizerDelegate {
         parent.state.linkQuery = nil
     }
 
+    func insertPictures(_ urls: [URL], data: [(Data, String)] = [], in tv: UITextView) {
+        let names = savePictures(urls, data: data)
+        guard !names.isEmpty else { return }
+        let sel = tv.selectedRange
+        let snippet = MarkdownEditing.embedSnippet(names, in: tv.text as NSString, at: sel)
+        replace(in: tv, range: sel, with: snippet.text)
+        tv.selectedRange = NSRange(location: sel.location + snippet.caret, length: 0)
+    }
+
     private func toggleTask(at location: Int, in tv: UITextView) {
         let ns = tv.text as NSString
         guard location + 2 < ns.length else { return }
@@ -704,7 +856,8 @@ final class SpaceUITextView: UITextView {
         var list = [
             UIKeyCommand(title: "Жирный", action: #selector(bold), input: "b", modifierFlags: .command),
             UIKeyCommand(title: "Курсив", action: #selector(italic), input: "i", modifierFlags: .command),
-            UIKeyCommand(title: "Ссылка на звезду", action: #selector(wiki), input: "k", modifierFlags: .command)
+            UIKeyCommand(title: "Ссылка на звезду", action: #selector(wiki), input: "k", modifierFlags: .command),
+            UIKeyCommand(title: "Ссылка на сайт", action: #selector(webLink), input: "k", modifierFlags: [.command, .shift])
         ]
         // Arrows only steer the [[ popup while it is open; otherwise they move the caret as usual.
         if coordinator?.popupVisible == true {
@@ -715,9 +868,56 @@ final class SpaceUITextView: UITextView {
         return list
     }
 
+    private var lastWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width != lastWidth else { return }
+        lastWidth = bounds.width
+        // Pictures are sized to the column: a rotation or a wider pane redraws them.
+        if let lm = layoutManager as? BlockLayoutManager, lm.blocks.contains(where: \.kind.isImage) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.coordinator?.restyle(self.textStorage, selection: self.selectedRange, force: true)
+            }
+        }
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), UIPasteboard.general.hasImages { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        let pb = UIPasteboard.general
+        if pb.hasImages, !pb.hasStrings || pb.string.map(MarkdownEditing.isWebAddress) == true, let coordinator {
+            let data = pb.data(forPasteboardType: UTType.png.identifier).map { ($0, "png") }
+                ?? pb.data(forPasteboardType: UTType.jpeg.identifier).map { ($0, "jpg") }
+                ?? pb.image?.pngData().map { ($0, "png") }
+            if let data { coordinator.insertPictures([], data: [data], in: self); return }
+        }
+        if selectedRange.length > 0, let s = pb.string, MarkdownEditing.isWebAddress(s), let range = selectedTextRange {
+            let start = selectedRange.location
+            let link = "[\(text(in: range) ?? "")](\(s.trimmingCharacters(in: .whitespacesAndNewlines)))"
+            replace(range, withText: link)
+            selectedRange = NSRange(location: start + (link as NSString).length, length: 0)
+            return
+        }
+        super.paste(sender)
+    }
+
+    func insertWebLink() {
+        guard let range = selectedTextRange else { return }
+        let start = selectedRange.location
+        let link = MarkdownEditing.webLink(selected: text(in: range) ?? "", clipboard: UIPasteboard.general.string)
+        replace(range, withText: link.text)
+        selectedRange = NSRange(location: start + link.caret, length: 0)
+    }
+
     @objc private func bold() { wrapSelection("**", "**") }
     @objc private func italic() { wrapSelection("*", "*") }
     @objc private func wiki() { wrapSelection("[[", "]]") }
+    @objc private func webLink() { insertWebLink() }
     @objc private func down() { moveSuggestion(+1) }
     @objc private func up() { moveSuggestion(-1) }
 
@@ -749,8 +949,8 @@ struct LinkSuggestions: View {
                 ForEach(Array(state.suggestions.enumerated()), id: \.offset) { index, title in
                     Button { state.complete?(title) } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: "sparkle").font(.caption).foregroundStyle(Theme.accent)
-                            Text(title).lineLimit(1)
+                            Image(systemName: icon(title)).font(.caption).foregroundStyle(Theme.accent)
+                            label(title).lineLimit(1)
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -767,5 +967,17 @@ struct LinkSuggestions: View {
             .offset(x: state.caretPoint.x, y: state.caretPoint.y)
             .transition(.opacity)
         }
+    }
+
+    private func icon(_ s: String) -> String {
+        if s.contains("#") { return "number" }
+        return EditorImages.isImage(s) ? "photo" : "sparkle"
+    }
+
+    /// "Note#Heading" reads as the heading, with its note dimmed in front.
+    private func label(_ s: String) -> Text {
+        guard let hash = s.firstIndex(of: "#") else { return Text(s) }
+        let note = s[..<hash], heading = s[s.index(after: hash)...]
+        return note.isEmpty ? Text(heading) : Text("\(note) › ").foregroundStyle(Theme.muted) + Text(heading)
     }
 }
