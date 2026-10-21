@@ -12,12 +12,15 @@ enum WorkTab: Hashable, Codable {
     case map
     case note(String)
     case dashboard
+    /// A widget out of its note (see Widgets.swift): "note path#k".
+    case widget(String)
 
     var selection: VaultStore.Selection {
         switch self {
         case .map: .map
         case .note(let id): .note(id)
         case .dashboard: .dashboard
+        case .widget(let t): .widget(t)
         }
     }
 
@@ -26,6 +29,7 @@ enum WorkTab: Hashable, Codable {
         case .map: self = .map
         case .note(let id): self = .note(id)
         case .dashboard: self = .dashboard
+        case .widget(let t): self = .widget(t)
         default: return nil
         }
     }
@@ -36,6 +40,7 @@ enum WorkTab: Hashable, Codable {
         case .map: "map"
         case .note(let id): "note:" + id
         case .dashboard: "dashboard"
+        case .widget(let t): "widget:" + t
         }
     }
 
@@ -43,6 +48,7 @@ enum WorkTab: Hashable, Codable {
         if token == "map" { self = .map }
         else if token == "dashboard" { self = .dashboard }
         else if token.hasPrefix("note:") { self = .note(String(token.dropFirst(5))) }
+        else if token.hasPrefix("widget:") { self = .widget(String(token.dropFirst(7))) }
         else { return nil }
     }
 }
@@ -253,6 +259,9 @@ final class Workspace {
         if drag?.target != t { drag?.target = t }
     }
 
+    /// The drag ended somewhere that handled it itself (a widget reordered on the dashboard).
+    func cancelDrag() { drag = nil }
+
     func endDrag() {
         defer { drag = nil }
         guard let d = drag else { return }
@@ -450,7 +459,11 @@ final class Workspace {
     func prune(existing: (String) -> Bool) {
         func walk(_ n: PaneNode) {
             if n.isPane {
-                n.tabs.removeAll { if case .note(let id) = $0 { return !existing(id) }; return false }
+                n.tabs.removeAll {
+                    if case .note(let id) = $0 { return !existing(id) }
+                    if case .widget(let t) = $0 { return !(WidgetRef(token: t).map { existing($0.note) } ?? false) }
+                    return false
+                }
                 if n.tabs.isEmpty { n.tabs = [.map] }
                 n.active = min(n.active, n.tabs.count - 1)
             }

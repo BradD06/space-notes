@@ -11,6 +11,8 @@ final class VaultStore {
         case note(String)
         /// The vault's dashboard (its profile page).
         case dashboard
+        /// A widget shown in a pane of its own ("note path#k", see Widgets.swift).
+        case widget(String)
     }
 
     private(set) var rootURL: URL?

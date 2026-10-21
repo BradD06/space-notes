@@ -172,6 +172,12 @@ private struct PaneView: View {
             CosmosMapView()
         case .dashboard:
             DashboardView()
+        case .widget(let token):
+            if let ref = WidgetRef(token: token) {
+                WidgetPane(ref: ref).id(token)
+            } else {
+                ContentUnavailableView("Виджет не найден", systemImage: "square.dashed")
+            }
         case nil:
             ContentUnavailableView("Нет открытых вкладок", systemImage: "rectangle.dashed")
         }
@@ -278,6 +284,7 @@ private struct TabBar: View {
         case .map: "Карта космоса"
         case .dashboard: "Дашборд"
         case .note(let id): vault.cosmos.title(id)
+        case .widget(let t): WidgetRef(token: t).map { r in WidgetIndex.shared.entry(r, vault)?.name ?? vault.cosmos.title(r.note) } ?? "Виджет"
         }
     }
 
@@ -286,12 +293,13 @@ private struct TabBar: View {
         case .map: "sparkles"
         case .dashboard: "rectangle.3.group"
         case .note(let id): Documents.icon(for: id)
+        case .widget: "square.grid.2x2"
         }
     }
 
     private func color(_ tab: WorkTab) -> Color {
         switch tab {
-        case .map, .dashboard: Theme.accent
+        case .map, .dashboard, .widget: Theme.accent
         case .note(let id): Theme.color(forUniverse: vault.cosmos.universeOf[id])
         }
     }

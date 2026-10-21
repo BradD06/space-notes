@@ -59,6 +59,8 @@ final class DataviewModel {
     var width: CGFloat = 600
     /// The note the block sits in (`this`, `[[]]`).
     var noteID: String?
+    /// Set when the block is shown outside its note (a pane, the dashboard).
+    var widgetRef: WidgetRef?
     @ObservationIgnored var onOpen: ((String) -> Void)?
     @ObservationIgnored var onToggle: ((TaskItem) -> Void)?
     /// The open note's own text, read from and written to its editor (```dataviewjs).
@@ -89,7 +91,7 @@ struct DataviewView: View {
         return DataviewJSView(code: model.query, noteID: model.noteID, vault: vault, actions: actions, height: $jsHeight)
             .frame(width: model.width, height: jsHeight)
             .overlay(alignment: .topTrailing) {
-                editButton
+                tools
                     .opacity(hover ? 1 : 0)
                     .offset(y: -2)
             }
@@ -122,6 +124,21 @@ struct DataviewView: View {
                 }
                 model.onOpen?(link)
             })
+    }
+
+    /// Where this block sits: given outside the note, found in the note's text inside it.
+    private var ref: WidgetRef? {
+        if let r = model.widgetRef { return r }
+        guard let id = model.noteID else { return nil }
+        return WidgetCatalog.blocks(in: vault.text(of: id)).firstIndex(of: model.query).map { WidgetRef(note: id, index: $0) }
+    }
+
+    /// The code button in the note; the widget's menu (pane, dashboard) wherever it can be found again.
+    private var tools: some View {
+        HStack(spacing: 4) {
+            if model.widgetRef == nil { editButton }
+            if let ref { WidgetMenu(ref: ref, standalone: model.widgetRef != nil, onShowCode: model.onEdit) }
+        }
     }
 
     private var editButton: some View {
@@ -189,7 +206,7 @@ struct DataviewView: View {
                 Text("\(result.count)").font(.system(size: 11.5)).foregroundStyle(Theme.muted.opacity(0.7))
             }
             Spacer(minLength: 8)
-            editButton
+            tools
         }
         .font(.system(size: 11.5))
     }
