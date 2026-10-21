@@ -31,6 +31,7 @@ struct SidebarView: View {
                     } else {
                         universesHeader
                         tree
+                        if !compact { SidebarWidgets() }
                     }
                 }
                 .padding(.vertical, 6)
