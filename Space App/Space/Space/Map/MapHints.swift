@@ -1,90 +1,14 @@
 import SwiftUI
 
-// MARK: - Hints panel: the lens over the map, as a list
+// MARK: - Hints: what each lens lights up
 
-/// The left panel of the map while a hint lens is on: the stars it lights up, one click to fly there.
-struct HintsPanel: View {
-    @Environment(VaultStore.self) private var vault
-    @Environment(MapModel.self) private var model
-
-    var body: some View {
-        @Bindable var model = model
-        let hints = InsightsCache.insights(vault)
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("ПОДСКАЗКИ").font(Theme.mono(10)).kerning(1.4).foregroundStyle(Theme.muted)
-                Spacer()
-                Button { model.lens = nil } label: { Image(systemName: "xmark").frame(width: 16, height: 16) }
-                    .buttonStyle(.glass)
-                    .tip("Убрать подсказки")
-            }
-            Picker("Подсказки", selection: $model.lens) {
-                ForEach(MapModel.Lens.allCases) { lens in
-                    Text("\(lens.title) \(count(lens, hints))").tag(Optional(lens))
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            if let lens = model.lens {
-                Text(Self.explain(lens)).font(.caption).foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        switch lens {
-                        case .suggestions:
-                            if hints.suggestions.isEmpty { empty("Пока нечего предложить: подсказки появятся, когда у заметок будут общие связи или теги.") }
-                            ForEach(hints.suggestions, id: \.self) { s in SuggestionRow(suggestion: s) }
-                        case .orphans:
-                            if hints.orphans.isEmpty { empty("Сирот нет: у каждой звезды есть хотя бы одна связь.") }
-                            ForEach(hints.orphans, id: \.self) { id in StarRow(id: id, detail: where_(id)) }
-                        case .forgotten:
-                            if hints.forgotten.isEmpty { empty("Забытых нет: все связанные звёзды правились за последние два месяца.") }
-                            ForEach(hints.forgotten, id: \.self) { id in
-                                StarRow(id: id, detail: forgottenDetail(id))
-                            }
-                        }
-                    }
-                }
-                .scrollIndicators(.never)
-            }
-            MapLegend()
-        }
-        .padding(16)
-        .glassEffect(.regular, in: .rect(cornerRadius: 26))
-    }
-
+enum HintsText {
     static func explain(_ lens: MapModel.Lens) -> String {
         switch lens {
         case .suggestions: "Пары звёзд без связи, у которых общие соседи или редкие теги. «Связать» допишет [[ссылку]] в заметку."
         case .orphans: "Звёзды без единой связи: к ним не ведёт ни одна дорога, их легко потерять."
         case .forgotten: "Связанные звёзды, которых ты не касался больше двух месяцев. Сначала самые связанные."
         }
-    }
-
-    private func count(_ lens: MapModel.Lens, _ hints: Insights) -> Int {
-        switch lens {
-        case .suggestions: hints.suggestions.count
-        case .orphans: hints.orphans.count
-        case .forgotten: hints.forgotten.count
-        }
-    }
-
-    private func empty(_ text: String) -> some View {
-        Text(text).font(.callout).foregroundStyle(Theme.muted).padding(.vertical, 8)
-    }
-
-    private func where_(_ id: String) -> String {
-        let c = vault.cosmos
-        let u = c.universeOf[id].flatMap { c.universe($0)?.name } ?? ""
-        let k = c.constellationOf[id].flatMap { c.constellationName[$0] } ?? ""
-        return "\(u) › \(k)"
-    }
-
-    private func forgottenDetail(_ id: String) -> String {
-        let c = vault.cosmos
-        let d = c.degree(id)
-        let when = c.notes[id].map { RuDate.relative($0.modified) } ?? ""
-        return "\(d) \(plural(d, "связь", "связи", "связей")) · \(when)"
     }
 }
 
@@ -182,26 +106,16 @@ struct SuggestionRow: View {
     }
 }
 
-/// What the marks on the map mean, in one glance.
-struct MapLegend: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            item(Image(systemName: "circle.fill"), "Размер звезды — число связей", Theme.ink, scale: 0.6)
-            item(Image(systemName: "circle.lefthalf.filled"), "Цвет — вселенная (папка)", Theme.muted, scale: 0.8)
-            item(Image(systemName: "circle.dotted"), "Сирота: нет связей", MapRenderer.lensColor(.orphans))
-            item(Image(systemName: "circle"), "Забытая: давно не правилась", MapRenderer.lensColor(.forgotten))
-            item(Image(systemName: "ellipsis"), "Пунктир — можно связать", MapRenderer.lensColor(.suggestions))
+extension Insights.Suggestion {
+    /// Why the two notes belong together, in words: "Обе ссылаются на A и B · #swift".
+    func reason(_ c: Cosmos) -> String {
+        var parts: [String] = []
+        if !via.isEmpty {
+            parts.append("Обе ссылаются на " + via.prefix(2).map { "«\(c.title($0))»" }.joined(separator: " и ")
+                         + (via.count > 2 ? " и ещё \(via.count - 2)" : ""))
         }
-        .font(.caption)
-        .foregroundStyle(Theme.muted)
-        .padding(.top, 4)
-    }
-
-    private func item(_ image: Image, _ text: String, _ color: Color, scale: CGFloat = 1) -> some View {
-        HStack(spacing: 8) {
-            image.foregroundStyle(color).scaleEffect(scale).frame(width: 14)
-            Text(text)
-        }
+        if !tags.isEmpty { parts.append("общие теги " + tags.prefix(3).map { "#" + $0 }.joined(separator: " ")) }
+        return parts.joined(separator: " · ")
     }
 }
 

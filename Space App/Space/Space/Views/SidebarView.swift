@@ -213,7 +213,7 @@ struct SidebarView: View {
         let selected = vault.selection == .map
         return Button {
             vault.selection = .map
-            map.go(to: .multiverse, cosmos: vault.cosmos, layout: map.layout)
+            map.go(to: .multiverse)
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 12, weight: .bold))
@@ -276,7 +276,6 @@ struct SidebarView: View {
             BarButton(icon: "folder", help: "Открыть другое хранилище…") { openingVault = true }
             BarButton(icon: "externaldrive.badge.plus", help: "Новое хранилище…") { creatingVault = true }
             BarButton(icon: "arrow.clockwise", help: "Перечитать хранилище") { Task { await vault.reload() } }
-            BarButton(icon: "circle.grid.cross", help: "Вернуть вселенные на карте на места") { map.resetUniversePositions() }
             BarButton(icon: "rectangle.portrait.and.arrow.right", help: "Закрыть хранилище", destructive: true) { vault.close() }
         }
         return Group {
@@ -321,7 +320,7 @@ struct SidebarView: View {
                 if compact {
                     CompactUniverse(universe: universe) {
                         vault.selection = .map
-                        map.go(to: .universe(universe.id), cosmos: cosmos, layout: map.layout)
+                        map.go(to: .universe(universe.id))
                     }
                 } else {
                     universeTree(universe)
@@ -350,7 +349,7 @@ struct SidebarView: View {
             Button("Новая звезда", systemImage: "plus") { creating = .star(universe: universe.id, constellation: "") }
             Button("Показать на карте", systemImage: "sparkles") {
                 vault.selection = .map
-                map.go(to: .universe(universe.id), cosmos: cosmos, layout: map.layout)
+                map.go(to: .universe(universe.id))
             }
             Divider()
             colorMenu(for: universe.id)
