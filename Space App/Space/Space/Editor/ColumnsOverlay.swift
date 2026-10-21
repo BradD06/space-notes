@@ -12,6 +12,8 @@ final class ColumnsView: NSView, NSTextViewDelegate {
     private(set) var editors: [ColumnTextView] = []
     /// Galleries inside each column (```gallery blocks work there as in the note).
     private var galleries: [GalleryOverlays] = []
+    /// Dataview tables and widgets inside each column, as in the note.
+    private var dataviews: [DataviewOverlays] = []
     private var styler: MarkdownStyler = {
         var s = MarkdownStyler()
         s.theme.bodySize = 16
@@ -56,6 +58,21 @@ final class ColumnsView: NSView, NSTextViewDelegate {
                     self.restyle(e)
                     self.layoutEditors()
                 })
+        }
+        dataviews = editors.map { e in
+            let o = DataviewOverlays(
+                textView: e,
+                vault: { [weak self] in self?.host?.coordinator?.parent.vault },
+                noteID: { [weak self] in self?.host?.coordinator?.parent.noteID },
+                onOpen: { [weak self] link in self?.host?.coordinator?.parent.onOpenLink(link) },
+                onResize: { [weak self, weak e] in
+                    guard let self, let e else { return }
+                    self.restyle(e)
+                    self.layoutEditors()
+                })
+            // The whole note (for a widget reading or rewriting its own note) is the note's editor, not the column's.
+            o.noteView = { [weak self] in self?.host }
+            return o
         }
     }
 
@@ -105,6 +122,7 @@ final class ColumnsView: NSView, NSTextViewDelegate {
                 c.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
                 lm.ensureLayout(for: c)
                 if galleries.indices.contains(i), let blm = lm as? BlockLayoutManager { galleries[i].sync(blm.blocks) }
+                if dataviews.indices.contains(i), let blm = lm as? BlockLayoutManager { dataviews[i].sync(blm.blocks) }
                 tallest = max(tallest, ceil(lm.usedRect(for: c).height) + e.textContainerInset.height * 2 + 4)
             }
         }
@@ -119,12 +137,16 @@ final class ColumnsView: NSView, NSTextViewDelegate {
         let overlay = editors.firstIndex(where: { $0 === e }).flatMap { galleries.indices.contains($0) ? galleries[$0] : nil }
         styler.galleriesEnabled = overlay != nil && host?.coordinator?.parent.vault != nil
         styler.galleryHeights = overlay?.heights ?? []
+        let dv = editors.firstIndex(where: { $0 === e }).flatMap { dataviews.indices.contains($0) ? dataviews[$0] : nil }
+        styler.dataviewEnabled = dv != nil && host?.coordinator?.parent.vault != nil
+        styler.dataviewHeights = dv?.heights ?? [:]
         let blocks = styler.apply(to: storage, active: active, revealAll: false)
         if let lm = storage.layoutManagers.first as? BlockLayoutManager {
             lm.blocks = blocks
             lm.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: storage.length))
         }
         overlay?.sync(blocks)
+        dv?.sync(blocks)
         e.typingAttributes = styler.theme.baseAttributes
     }
 

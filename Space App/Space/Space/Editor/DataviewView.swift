@@ -486,6 +486,8 @@ final class DataviewOverlays {
     static let gap: CGFloat = 12
     var vault: () -> VaultStore?
     var noteID: () -> String?
+    /// The editor holding the whole note: this one, or the note's own editor for a column's widgets.
+    lazy var noteView: () -> NSTextView? = { [weak self] in self?.textView }
     var onOpen: (String) -> Void
     var onResize: () -> Void
 
@@ -524,7 +526,7 @@ final class DataviewOverlays {
                 model.onToggle = { [weak self] task in self?.toggle(task) }
                 model.onRead = { [weak self] path in
                     guard let self, path == self.noteID() else { return nil }
-                    return self.textView?.string
+                    return self.noteView()?.string
                 }
                 model.onWrite = { [weak self] path, text in
                     guard let self, path == self.noteID() else { return false }
@@ -689,7 +691,7 @@ final class DataviewOverlays {
 
     /// A widget rewrote this very note: the editor takes the new text as one undoable change.
     private func replaceAll(with text: String) {
-        guard let tv = textView, tv.string != text else { return }
+        guard let tv = noteView(), tv.string != text else { return }
         let all = NSRange(location: 0, length: (tv.string as NSString).length)
         let sel = tv.selectedRange()
         guard tv.shouldChangeText(in: all, replacementString: text) else { return }
@@ -701,7 +703,7 @@ final class DataviewOverlays {
     /// A task of this very note is ticked through the editor (one undoable change); others are saved to their file.
     private func toggle(_ task: TaskItem) {
         guard task.path == noteID() else { vault()?.toggle(task); return }
-        guard let tv = textView else { return }
+        guard let tv = noteView() else { return }
         let ns = tv.string as NSString
         var start = 0
         for _ in 0..<task.line {
