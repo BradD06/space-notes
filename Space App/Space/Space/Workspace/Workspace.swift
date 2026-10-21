@@ -96,13 +96,24 @@ final class Workspace {
     private let saveKey = "space.workspace"
 
     init() {
-        let pane = PaneNode()
+        let pane = PaneNode(tabs: [.dashboard])
         root = pane
         focusedID = pane.id
         if let restored = Self.load(key: saveKey) {
             root = restored
             focusedID = Self.firstPane(in: restored)?.id ?? restored.id
         }
+        startOnDashboard()
+    }
+
+    /// The app always opens on the dashboard: its tab if one is open anywhere, otherwise a new first tab
+    /// in the first pane. The other tabs from last time stay where they were.
+    private func startOnDashboard() {
+        guard !reveal(.dashboard), let pane = Self.firstPane(in: root) else { return }
+        pane.tabs.insert(.dashboard, at: 0)
+        pane.active = 0
+        focusedID = pane.id
+        save()
     }
 
     var focused: PaneNode? { Self.find(focusedID, in: root) }

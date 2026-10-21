@@ -43,6 +43,29 @@ final class MapModel {
     /// True while the history of the vault is being played on the overview.
     private(set) var isPlayingHistory = false
 
+    /// A hint lens over the map: it lights up the stars that need attention and dims the rest.
+    enum Lens: String, CaseIterable, Identifiable {
+        case suggestions, orphans, forgotten
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .suggestions: "Связать"
+            case .orphans: "Сироты"
+            case .forgotten: "Забытые"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .suggestions: "link.badge.plus"
+            case .orphans: "circle.dotted"
+            case .forgotten: "moon.zzz"
+            }
+        }
+    }
+    var lens: Lens?
+    /// Set by the renderer each frame from the vault's hints, so drawing and hit tests share one copy.
+    @ObservationIgnored var insights = Insights(Cosmos())
+
     // Gestures
     var pan: CGSize = .zero
     var zoom: CGFloat = 1

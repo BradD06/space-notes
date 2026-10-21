@@ -23,7 +23,7 @@ final class VaultStore {
     var bookPage: [String: Int] = [:]
     /// …and the words of the quote to find and light up on that page.
     var bookFind: [String: String] = [:]
-    var selection: Selection? = .map {
+    var selection: Selection? = .dashboard {
         didSet {
             // Back / forward history, like a browser.
             guard !navigating, let old = oldValue, old != selection else { return }
@@ -77,7 +77,7 @@ final class VaultStore {
         if remember {
             do { try BookmarkStore.save(url) } catch { errorMessage = "Не удалось запомнить папку: \(error.localizedDescription)" }
         }
-        selection = .map
+        selection = .dashboard
         checkWritable()
         await reload()
     }

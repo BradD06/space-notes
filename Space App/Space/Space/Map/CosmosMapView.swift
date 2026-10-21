@@ -30,6 +30,7 @@ struct CosmosMapView: View {
                     Canvas { ctx, size in
                         model.lastSize = size
                         model.step(timeline.date)
+                        model.insights = InsightsCache.insights(vault)
                         MapRenderer(cosmos: vault.cosmos, model: model, now: timeline.date, size: size).draw(in: &ctx)
                     }
                 }
@@ -53,6 +54,14 @@ struct CosmosMapView: View {
                     TrailBar()
                 }
                 .padding(12)
+            }
+            .overlay(alignment: .topLeading) {
+                if model.lens != nil {
+                    HintsPanel()
+                        .frame(width: compact ? nil : 300)
+                        .padding(.top, 76).padding(.horizontal, 12).padding(.bottom, 80)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
             }
             .overlay(alignment: .topTrailing) {
                 if !compact, model.focusedStar != nil {
@@ -78,6 +87,7 @@ struct CosmosMapView: View {
             .animation(.smooth(duration: 0.35), value: model.focusedStar)
             .animation(.smooth(duration: 0.35), value: model.showFocusPanel)
             .animation(.smooth(duration: 0.35), value: model.isPlayingHistory)
+            .animation(.smooth(duration: 0.35), value: model.lens)
         }
         .background(SpaceBackground())
         .task(id: vault.generation) {
