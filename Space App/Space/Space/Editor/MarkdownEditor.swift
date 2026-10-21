@@ -48,6 +48,8 @@ struct MarkdownEditor {
     var vault: VaultStore? = nil
     /// The note's file: pictures are found from here and pasted ones are saved next to it.
     var noteURL: URL? = nil
+    /// The note being edited, for ```dataview queries (`this`, `FROM [[]]`).
+    var noteID: String? = nil
 }
 
 // MARK: - Logic shared by both platforms
@@ -92,6 +94,8 @@ final class EditorCoordinator: NSObject {
         styler.propertiesHeight = host?.propertiesHeight ?? 80
         styler.galleriesEnabled = host != nil && parent.vault != nil
         styler.galleryHeights = host?.galleryHeights ?? []
+        styler.dataviewEnabled = host != nil && parent.vault != nil
+        styler.dataviewHeights = host?.dataviewHeights ?? [:]
         #endif
         let blocks = styler.apply(to: storage, active: selection, revealAll: parent.revealAll)
         if let lm = storage.layoutManagers.first as? BlockLayoutManager {
@@ -102,6 +106,7 @@ final class EditorCoordinator: NSObject {
         host?.syncColumns(blocks)
         host?.syncProperties(blocks)
         host?.syncGalleries(blocks)
+        host?.syncDataviews(blocks)
         #endif
     }
 
@@ -392,12 +397,13 @@ extension EditorCoordinator: NSTextViewDelegate {
         tv.setSelectedRange(NSRange(location: sel.location + snippet.caret, length: 0))
     }
 
+    /// Ticks the box; a Tasks-plugin line also gets (or loses) its "✅ date".
     private func toggleTask(at location: Int, in tv: NSTextView) {
         let ns = tv.string as NSString
         guard location + 2 < ns.length else { return }
-        let mark = NSRange(location: location + 1, length: 1)
-        let checked = ns.substring(with: mark).lowercased() == "x"
-        replace(in: tv, range: mark, with: checked ? " " : "x")
+        let line = ns.lineRange(for: NSRange(location: location, length: 0))
+        let content = NSRange(location: line.location, length: line.length - (ns.substring(with: line).hasSuffix("\n") ? 1 : 0))
+        replace(in: tv, range: content, with: Tasks.toggled(ns.substring(with: content)))
     }
 
     private func continueList(in tv: NSTextView) -> Bool {
@@ -488,6 +494,16 @@ final class SpaceTextView: NSTextView {
             guard let self, let storage = self.textStorage else { return }
             self.coordinator?.restyle(storage, selection: self.selectedRange(), force: true)
         })
+    /// Dataview results (see DataviewView.swift) over each ```dataview block.
+    lazy var dataviews = DataviewOverlays(
+        textView: self,
+        vault: { [weak self] in self?.coordinator?.parent.vault },
+        noteID: { [weak self] in self?.coordinator?.parent.noteID },
+        onOpen: { [weak self] link in self?.coordinator?.parent.onOpenLink(link) },
+        onResize: { [weak self] in
+            guard let self, let storage = self.textStorage else { return }
+            self.coordinator?.restyle(storage, selection: self.selectedRange(), force: true)
+        })
 
     override func setFrameSize(_ newSize: NSSize) {
         let widthChanged = newSize.width != frame.width
@@ -498,12 +514,13 @@ final class SpaceTextView: NSTextView {
                 self.coordinator?.restyle(storage, selection: self.selectedRange(), force: true)
             }
         }
-        guard widthChanged, !columnViews.isEmpty || propertiesHost != nil || !galleries.isEmpty else { return }
+        guard widthChanged, !columnViews.isEmpty || propertiesHost != nil || !galleries.isEmpty || !dataviews.isEmpty else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let lm = self.layoutManager as? BlockLayoutManager else { return }
             self.syncColumns(lm.blocks)
             self.syncProperties(lm.blocks)      // the panels follow the new width
             self.syncGalleries(lm.blocks)
+            self.syncDataviews(lm.blocks)
         }
     }
 
@@ -828,11 +845,13 @@ extension EditorCoordinator: UITextViewDelegate, UIGestureRecognizerDelegate {
         tv.selectedRange = NSRange(location: sel.location + snippet.caret, length: 0)
     }
 
+    /// Ticks the box; a Tasks-plugin line also gets (or loses) its "✅ date".
     private func toggleTask(at location: Int, in tv: UITextView) {
         let ns = tv.text as NSString
         guard location + 2 < ns.length else { return }
-        let mark = NSRange(location: location + 1, length: 1)
-        replace(in: tv, range: mark, with: ns.substring(with: mark).lowercased() == "x" ? " " : "x")
+        let line = ns.lineRange(for: NSRange(location: location, length: 0))
+        let content = NSRange(location: line.location, length: line.length - (ns.substring(with: line).hasSuffix("\n") ? 1 : 0))
+        replace(in: tv, range: content, with: Tasks.toggled(ns.substring(with: content)))
     }
 
     private func replace(in tv: UITextView, range: NSRange, with string: String) {

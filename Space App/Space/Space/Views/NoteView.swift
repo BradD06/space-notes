@@ -51,7 +51,8 @@ struct NoteView: View {
                            state: editor,
                            hideProperties: hideProperties,
                            vault: vault,
-                           noteURL: file ?? vault.url(for: noteID))
+                           noteURL: file ?? vault.url(for: noteID),
+                           noteID: file == nil ? noteID : nil)
                 .editorMedia(editor)
                 .overlay(alignment: .topLeading) { LinkSuggestions(state: editor) }
                 .overlay(alignment: .topLeading) { SlashMenu(state: editor) }
