@@ -127,6 +127,8 @@ private struct MainChrome: ViewModifier {
             Task { @MainActor in workspace.show(new) }
         }
         .onChange(of: vault.generation) { _, _ in
+            // Renamed or moved in another app: open tabs follow the file.
+            for (old, new) in vault.lastMoves { workspace.retarget(old: old, new: new) }
             workspace.prune { vault.cosmos.notes[$0] != nil }
         }
         // The system folder picker is the only way a sandboxed app gets write access to a folder.

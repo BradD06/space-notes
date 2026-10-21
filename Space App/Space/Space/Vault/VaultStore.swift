@@ -55,6 +55,18 @@ final class VaultStore {
     private(set) var needsWriteAccess = false
 
     private var isAccessing = false
+    /// Sees changes other apps (Obsidian, Finder, iCloud) make to the vault while it is open.
+    private var watcher: VaultWatcher?
+    /// Notes Space itself just saved (id → when): the watcher's echo of these is not an outside change.
+    private var ownWrites: [String: Date] = [:]
+    /// The file behind each note (id → file identifier), to recognise a note renamed or moved outside Space.
+    private var fileIDs: [String: UInt64] = [:]
+    /// Notes renamed or moved outside Space, old id → new id: tabs and unsaved edits follow them.
+    private var renamed: [String: String] = [:]
+    /// Notes the last reread found under a new name (old id → new id); the workspace moves their tabs along.
+    private(set) var lastMoves: [String: String] = [:]
+    /// Each reread gets a number; a slower, older one doesn't overwrite a newer result.
+    private var scanNumber = 0
     /// Parent folder picked when creating a vault; kept open so the new vault stays writable this session.
     private var parentAccess: URL?
 
@@ -68,9 +80,12 @@ final class VaultStore {
     }
 
     func open(_ url: URL, remember: Bool = true) async {
+        stopWatching()
         stopAccessing()
         isAccessing = url.startAccessingSecurityScopedResource()
         rootURL = url
+        fileIDs = [:]
+        renamed = [:]
         UniverseColors.shared.load(vault: url.path)
         VaultProfile.shared.load(root: url)
         BookStats.shared.load(root: url)
@@ -80,6 +95,7 @@ final class VaultStore {
         selection = .map
         checkWritable()
         await reload()
+        startWatching()
     }
 
     /// The user picked the folder again in the system dialog — this grants (and remembers) write access.
@@ -109,6 +125,7 @@ final class VaultStore {
     }
 
     func close() {
+        stopWatching()
         stopAccessing()
         if let p = parentAccess { p.stopAccessingSecurityScopedResource(); parentAccess = nil }
         BookmarkStore.forget()
@@ -121,17 +138,94 @@ final class VaultStore {
 
     func reload() async {
         guard let root = rootURL else { return }
+        scanNumber += 1
+        let number = scanNumber
         isLoading = true
-        defer { isLoading = false }
+        defer { if number == scanNumber { isLoading = false } }
         do {
-            let built = try await Task.detached(priority: .userInitiated) { () throws -> Cosmos in
+            let (built, ids) = try await Task.detached(priority: .userInitiated) { () throws -> (Cosmos, [String: UInt64]) in
                 let scanned = try VaultScanner.scan(root: root)
-                return Cosmos(notes: scanned.notes, folders: scanned.folders)
+                var ids: [String: UInt64] = [:]
+                for note in scanned.notes {
+                    ids[note.id] = try? root.appending(path: note.id).resourceValues(forKeys: [.fileIdentifierKey]).fileIdentifier
+                }
+                return (Cosmos(notes: scanned.notes, folders: scanned.folders), ids)
             }.value
+            guard number == scanNumber, root == rootURL else { return }
+            followMoves(newIDs: ids, in: built)
             setCosmos(built)
         } catch {
             errorMessage = "Не удалось прочитать хранилище: \(error.localizedDescription)"
         }
+    }
+
+    /// Notes that vanished from one path and whose file turned up at another were renamed or moved:
+    /// remember it, so the open note, its tabs and its unsaved edits go along.
+    private func followMoves(newIDs: [String: UInt64], in built: Cosmos) {
+        var byFile: [UInt64: String] = [:]
+        for (id, file) in newIDs where cosmos.notes[id] == nil { byFile[file] = id }
+        var moves: [String: String] = [:]
+        for (old, file) in fileIDs where newIDs[old] == nil {
+            if let new = byFile[file] { moves[old] = new }
+        }
+        fileIDs = newIDs
+        lastMoves = moves
+        guard !moves.isEmpty else { return }
+        for (old, new) in renamed { if let newer = moves[new] { renamed[old] = newer } }
+        renamed.merge(moves) { _, new in new }
+        if case .note(let id) = selection, let new = moves[id] {
+            navigating = true
+            selection = .note(new)
+            navigating = false
+        }
+    }
+
+    // MARK: Watching
+
+    private func startWatching() {
+        guard let root = rootURL else { return }
+        let w = VaultWatcher(root: root) { [weak self] paths in self?.changedOutside(paths) }
+        w.start()
+        watcher = w
+    }
+
+    private func stopWatching() {
+        watcher?.stop()
+        watcher = nil
+    }
+
+    /// The watcher saw files change: reread the vault, then let open notes take the new text.
+    private func changedOutside(_ paths: [String]) {
+        guard let root = rootURL else { return }
+        let rootPath = Self.canonical(root.path)
+        let now = Date.now
+        ownWrites = ownWrites.filter { now.timeIntervalSince($0.value) < 3 }
+        let ignored = [".obsidian", ".git", ".trash"]       // other apps' settings, history and deleted files
+        let changed = paths.compactMap { path -> String? in
+            let full = Self.canonical(path)
+            guard full.hasPrefix(rootPath) else { return nil }
+            let rel = String(full.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if ownWrites[rel] != nil || ignored.contains(where: { rel == $0 || rel.hasPrefix($0 + "/") }) { return nil }
+            return rel
+        }
+        guard !changed.isEmpty else { return }
+        // Hidden files (Space's own profile, iCloud placeholders) don't change the cosmos; open pages still check them.
+        let visible = changed.contains { !$0.split(separator: "/").contains { $0.hasPrefix(".") } }
+        Task {
+            if visible { await reload() }
+            NotificationCenter.default.post(name: .spaceVaultChangedOutside, object: nil)
+        }
+    }
+
+    /// Back in the app (iOS suspends file presenters in the background): pick up what changed meanwhile.
+    func refreshFromDisk() async {
+        guard rootURL != nil else { return }
+        await reload()
+        NotificationCenter.default.post(name: .spaceVaultChangedOutside, object: nil)
+    }
+
+    private static func canonical(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     // MARK: Notes
@@ -144,11 +238,15 @@ final class VaultStore {
     }
 
     func save(_ id: String, text: String) {
+        // Renamed in another app while open: the edits go to the note's new place.
+        let moved = renamed[id]
+        let id = moved ?? id
         // A note that was just moved or deleted must not come back at its old place.
         guard let url = url(for: id), FileManager.default.fileExists(atPath: url.path) else { return }
+        ownWrites[id] = .now
         var coordinatorError: NSError?
         var writeError: Error?
-        NSFileCoordinator().coordinate(writingItemAt: url, options: [], error: &coordinatorError) { target in
+        NSFileCoordinator(filePresenter: watcher).coordinate(writingItemAt: url, options: [], error: &coordinatorError) { target in
             do { try text.write(to: target, atomically: true, encoding: .utf8) } catch { writeError = error }
         }
         if let e = writeError ?? coordinatorError {
@@ -165,6 +263,8 @@ final class VaultStore {
         note.tags = MarkdownParser.tags(in: text)
         note.modified = .now
         setCosmos(cosmos.updating(note))
+        // The page now open under the new name read the file before these edits reached it.
+        if moved != nil { NotificationCenter.default.post(name: .spaceVaultChangedOutside, object: nil) }
     }
 
     // MARK: Creating a vault

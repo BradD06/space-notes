@@ -96,6 +96,43 @@ struct NoteView: View {
             let gap = text.isEmpty || text.hasSuffix("\n\n") ? "" : (text.hasSuffix("\n") ? "\n" : "\n\n")
             text += gap + add
         }
+        // Changed in Obsidian, Finder or by iCloud while open.
+        .onReceive(NotificationCenter.default.publisher(for: .spaceVaultChangedOutside)) { _ in reloadFromDisk() }
+    }
+
+    /// Takes the text from disk when another app changed the file. Edits not saved yet are kept: merged with
+    /// the outside change when they touch other lines, otherwise the outside version is kept as a copy beside it.
+    private func reloadFromDisk() {
+        guard let url = file ?? vault.url(for: noteID),
+              let disk = try? String(contentsOf: url, encoding: .utf8), disk != lastSaved else { return }
+        if text == lastSaved || text == disk {
+            saveTask?.cancel()
+            lastSaved = disk
+            text = disk
+        } else if let merged = TextMerge.merge(base: lastSaved, mine: text, theirs: disk) {
+            lastSaved = disk
+            text = merged                        // saved shortly, like any edit
+        } else {
+            keepConflictCopy(disk, of: url)
+            lastSaved = disk
+            save(text)
+        }
+    }
+
+    /// "Note (изменено вне Space).md" next to the note, with the other app's version.
+    private func keepConflictCopy(_ other: String, of url: URL) {
+        let dir = url.deletingLastPathComponent(), name = url.deletingPathExtension().lastPathComponent
+        var target = dir.appending(path: "\(name) (изменено вне Space).md"), n = 2
+        while FileManager.default.fileExists(atPath: target.path) {
+            target = dir.appending(path: "\(name) (изменено вне Space) \(n).md"); n += 1
+        }
+        do {
+            try other.write(to: target, atomically: true, encoding: .utf8)
+            vault.errorMessage = "«\(name)» изменили в другом приложении, пока здесь были несохранённые правки. Твои правки остались в заметке, другая версия сохранена рядом: «\(target.deletingPathExtension().lastPathComponent)»."
+        } catch {
+            vault.errorMessage = "«\(name)» изменили в другом приложении. Твои правки сохранены, но другую версию не удалось сохранить рядом: \(error.localizedDescription)"
+        }
+        Task { await vault.reload() }
     }
 
     /// The note's own tools, inside the note (not in the window toolbar) so every pane has its own.
