@@ -89,6 +89,10 @@ struct MarkdownStyler {
     /// ```gallery blocks shown as card grids on top (macOS, with the vault at hand); room kept for each.
     var galleriesEnabled = false
     var galleryHeights: [CGFloat] = []
+    /// ```dataview blocks shown as their query's results (macOS); room kept for each, by the block's text.
+    /// A block the caret is in shows its Markdown, so the query can be edited.
+    var dataviewEnabled = false
+    var dataviewHeights: [String: CGFloat] = [:]
     /// Does `[[target]]` point to an existing note?
     var resolves: (String) -> Bool = { _ in true }
 
@@ -164,6 +168,12 @@ struct MarkdownStyler {
                     let k = blocks.filter { $0.kind == .gallery }.count
                     reserve(storage, ns: ns, lines: Array(lines[i...last]), height: k < galleryHeights.count ? galleryHeights[k] : 240)
                     blocks.append(EditorBlock(kind: .gallery, range: range))
+                    i = last + 1
+                    continue
+                }
+                if dataviewEnabled, !revealAll, lang.lowercased() == Dataview.language, j < lines.count, !touches(range) {
+                    reserve(storage, ns: ns, lines: Array(lines[i...last]), height: dataviewHeights[ns.substring(with: range)] ?? 120)
+                    blocks.append(EditorBlock(kind: .dataview, range: range))
                     i = last + 1
                     continue
                 }
@@ -493,6 +503,7 @@ struct MarkdownStyler {
             if done, rest.length > 0 {
                 s.addAttributes([.foregroundColor: theme.muted, .strikethroughStyle: NSUnderlineStyle.single.rawValue], range: rest)
             }
+            styleTaskDates(s, str: str, range: rest, done: done)
             content = rest
         } else if let m = Self.list.firstMatch(in: str, range: line) {
             indent(s, prefix: m.range, line: line)
@@ -501,6 +512,19 @@ struct MarkdownStyler {
         }
 
         styleInline(s, ns: ns, range: content, active: active)
+    }
+
+    /// Tasks-plugin dates ("📅 2026-10-18") in a smaller face: a due date red when overdue, amber when today.
+    private func styleTaskDates(_ s: NSTextStorage, str: String, range: NSRange, done: Bool) {
+        let ns = str as NSString
+        let today = Tasks.startOfToday()
+        for m in Tasks.dateToken.matches(in: str, range: range) {
+            var color = theme.muted
+            if !done, ns.substring(with: m.range(at: 1)) == "📅", let d = Tasks.day(ns.substring(with: m.range(at: 2))) {
+                if d < today { color = PlatformColor.hex(0xFF7A7A) } else if d == today { color = theme.accent }
+            }
+            s.addAttributes([.font: theme.font(size: theme.bodySize * 0.8, serif: false), .foregroundColor: color], range: m.range)
+        }
     }
 
     private func indent(_ s: NSTextStorage, prefix: NSRange, line: NSRange) {
@@ -720,6 +744,8 @@ struct EditorBlock {
         case properties
         /// A ```gallery block: a grid of cards on top.
         case gallery
+        /// A ```dataview block: the query's results on top.
+        case dataview
     }
     var kind: Kind
     var range: NSRange
@@ -771,7 +797,7 @@ final class BlockLayoutManager: NSLayoutManager {
             case .callout(let color):
                 fill(ctx, rect.insetBy(dx: 0, dy: -4), radius: 10, color: color.withAlphaComponent(0.1))
                 fill(ctx, CGRect(x: rect.minX, y: rect.minY - 4, width: 3, height: rect.height + 8), radius: 1.5, color: color)
-            case .columns, .properties, .gallery:
+            case .columns, .properties, .gallery, .dataview:
                 break
             }
             ctx.restoreGState()
@@ -838,7 +864,7 @@ extension BlockLayoutManager: NSLayoutManagerDelegate {
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUseTemporaryAttributes attrs: [NSAttributedString.Key: Any] = [:],
                        forDrawingToScreen toScreen: Bool, atCharacterIndex charIndex: Int,
                        effectiveRange effectiveCharRange: NSRangePointer?) -> [NSAttributedString.Key: Any]? {
-        for block in blocks where block.kind == .columns || block.kind == .properties || block.kind == .gallery {
+        for block in blocks where block.kind == .columns || block.kind == .properties || block.kind == .gallery || block.kind == .dataview {
             if charIndex >= block.range.location && charIndex <= NSMaxRange(block.range) { return [:] }
         }
         return attrs

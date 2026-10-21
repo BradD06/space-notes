@@ -50,7 +50,8 @@ struct NoteView: View {
                            onOpenLink: openLink,
                            state: editor,
                            hideProperties: hideProperties,
-                           vault: vault)
+                           vault: vault,
+                           noteID: file == nil ? noteID : nil)
                 .overlay(alignment: .topLeading) { LinkSuggestions(state: editor) }
                 .overlay(alignment: .topLeading) { SlashMenu(state: editor) }
                 .overlay(alignment: .topLeading) { SelectionBar(state: editor) }
