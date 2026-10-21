@@ -6,6 +6,8 @@ import AppKit
 @main
 struct SpaceApp: App {
     @State private var vault = VaultStore()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var wasAway = false
 
     init() {
         #if os(macOS)
@@ -21,6 +23,13 @@ struct SpaceApp: App {
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 .task { await vault.restore() }
+                #if os(iOS)
+                // Changes synced while Space was in the background (the watcher sleeps there).
+                .onChange(of: scenePhase) { _, new in
+                    if new == .background { wasAway = true }
+                    if new == .active, wasAway { wasAway = false; Task { await vault.refreshFromDisk() } }
+                }
+                #endif
         }
         #if os(macOS)
         .defaultSize(width: 1280, height: 820)
