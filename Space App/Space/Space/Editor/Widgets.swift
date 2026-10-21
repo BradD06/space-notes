@@ -30,7 +30,7 @@ nonisolated enum WidgetCatalog {
         for line in text.components(separatedBy: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
             if current == nil {
-                let lower = t.lowercased()
+                let lower = (t.split(separator: " ").first.map(String.init) ?? "").lowercased()
                 for m in ["```", "~~~"] where lower == m + Dataview.language || lower == m + DataviewJS.language {
                     current = [line]
                     marker = m
@@ -576,12 +576,20 @@ struct WidgetMenu: View {
     let ref: WidgetRef
     var standalone = false
     var onShowCode: (() -> Void)?
+    /// In its note: placed freely (true) or in the line (false); nil elsewhere.
+    var floating: Bool? = nil
+    var onToggleFloat: (() -> Void)? = nil
     @Environment(VaultStore.self) private var vault
     private let pinned = PinnedWidgets.shared
 
     var body: some View {
         let _ = pinned.use(vault)
         Menu {
+            if let floating, let onToggleFloat {
+                Button(floating ? "Вернуть в строку текста" : "Свободное размещение (текст обтекает)",
+                       systemImage: floating ? "text.alignleft" : "arrow.up.and.down.and.arrow.left.and.right") { onToggleFloat() }
+                Divider()
+            }
             if !standalone {
                 Button("Открыть в отдельной панели", systemImage: "arrow.up.forward.square") { vault.selection = .widget(ref.token) }
             }
@@ -606,5 +614,41 @@ struct WidgetMenu: View {
         #endif
         .buttonStyle(.plain).fixedSize()
         .help("Виджет: отдельная панель, дашборд, боковая панель")
+    }
+}
+
+// MARK: - Floating in the note
+
+/// A widget placed freely in its note, text flowing around it: kept in the block's opening line,
+/// "```dataviewjs float x=520 y=0 w=320" (Obsidian reads only the first word, so the note stays compatible).
+/// x, y: points from the top left of the text; w: the widget's width.
+nonisolated struct WidgetFloat: Equatable, Sendable {
+    var x: CGFloat
+    var y: CGFloat
+    var w: CGFloat
+
+    static func parse(_ fenceLine: String) -> WidgetFloat? {
+        let words = fenceLine.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard words.contains("float") else { return nil }
+        func value(_ k: String) -> CGFloat? {
+            words.first { $0.hasPrefix(k + "=") }.flatMap { Double($0.dropFirst(k.count + 1)) }.map { CGFloat($0) }
+        }
+        return WidgetFloat(x: value("x") ?? 0, y: value("y") ?? 0, w: value("w") ?? 320)
+    }
+
+    /// The opening line with this placement (or none): the fence and language stay, old placement words go.
+    static func fenceLine(_ line: String, with f: WidgetFloat?) -> String {
+        let indent = line.prefix { $0 == " " || $0 == "\t" }
+        let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        var kept = words.filter { w in w != "float" && !["x=", "y=", "w="].contains { w.hasPrefix($0) } }
+        if let f {
+            kept += ["float", "x=\(Int(f.x.rounded()))", "y=\(Int(f.y.rounded()))", "w=\(Int(f.w.rounded()))"]
+        }
+        return String(indent) + kept.joined(separator: " ")
+    }
+
+    /// The first line of a block.
+    static func of(block: String) -> WidgetFloat? {
+        parse(String(block.prefix { $0 != "\n" }))
     }
 }

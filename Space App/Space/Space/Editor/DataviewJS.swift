@@ -169,7 +169,7 @@ struct DataviewJSView: PlatformWebViewRepresentable {
     }
 
     private func update(_ c: Coordinator) {
-        let reload = c.parent.code != code || c.parent.noteID != noteID
+        let reload = DataviewJS.code(of: c.parent.code) != DataviewJS.code(of: code) || c.parent.noteID != noteID
         c.parent = self
         if reload { c.load() } else { c.vaultChanged() }
     }

@@ -61,6 +61,13 @@ final class DataviewModel {
     var noteID: String?
     /// Set when the block is shown outside its note (a pane, the dashboard).
     var widgetRef: WidgetRef?
+    /// Placed freely in the note, text flowing around it (see WidgetFloat).
+    var floating = false
+    /// Moving (offset so far, finished?) and resizing (width change so far, finished?) a floating widget.
+    @ObservationIgnored var onFloatMove: ((CGSize, Bool) -> Void)?
+    @ObservationIgnored var onFloatResize: ((CGFloat, Bool) -> Void)?
+    /// Switches between floating and in the line of text.
+    @ObservationIgnored var onToggleFloat: (() -> Void)?
     @ObservationIgnored var onOpen: ((String) -> Void)?
     @ObservationIgnored var onToggle: ((TaskItem) -> Void)?
     /// The open note's own text, read from and written to its editor (```dataviewjs).
@@ -81,7 +88,46 @@ struct DataviewView: View {
     private static let pageSize = 50
 
     var body: some View {
-        if DataviewJS.isJS(model.query) { script } else { query }
+        Group {
+            if DataviewJS.isJS(model.query) { script } else { query }
+        }
+        .overlay(alignment: .topLeading) { if model.floating { moveGrip } }
+        .overlay(alignment: .bottomTrailing) { if model.floating { resizeGrip } }
+        .onHover { hover = $0 }
+    }
+
+    // MARK: Floating
+
+    @State private var grabbing = false
+
+    /// Drag to move the widget anywhere in the note; the text makes way.
+    private var moveGrip: some View {
+        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(Theme.ink)
+            .frame(width: 24, height: 22)
+            .background(Capsule().fill(Theme.accent.opacity(0.85)))
+            .contentShape(Capsule())
+            .opacity(hover || grabbing ? 1 : 0)
+            .offset(x: -6, y: -6)
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { v in grabbing = true; model.onFloatMove?(v.translation, false) }
+                .onEnded { v in grabbing = false; model.onFloatMove?(v.translation, true) })
+            .help("Перетащи виджет в любое место заметки — текст его обтечёт")
+    }
+
+    private var resizeGrip: some View {
+        Image(systemName: "arrow.left.and.right")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(Theme.muted)
+            .frame(width: 22, height: 20)
+            .background(Capsule().fill(Theme.surfaceHigh.opacity(0.9)))
+            .contentShape(Capsule())
+            .opacity(hover || grabbing ? 1 : 0)
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { v in grabbing = true; model.onFloatResize?(v.translation.width, false) }
+                .onEnded { v in grabbing = false; model.onFloatResize?(v.translation.width, true) })
+            .help("Потяни, чтобы изменить ширину")
     }
 
     // MARK: ```dataviewjs
@@ -95,7 +141,6 @@ struct DataviewView: View {
                     .opacity(hover ? 1 : 0)
                     .offset(y: -2)
             }
-            .onHover { hover = $0 }
             .padding(.vertical, 4)
             .background(GeometryReader { g in
                 Color.clear
@@ -137,7 +182,10 @@ struct DataviewView: View {
     private var tools: some View {
         HStack(spacing: 4) {
             if model.widgetRef == nil { editButton }
-            if let ref { WidgetMenu(ref: ref, standalone: model.widgetRef != nil, onShowCode: model.onEdit) }
+            if let ref {
+                WidgetMenu(ref: ref, standalone: model.widgetRef != nil, onShowCode: model.onEdit,
+                           floating: model.onToggleFloat == nil ? nil : model.floating, onToggleFloat: model.onToggleFloat)
+            }
         }
     }
 
@@ -429,7 +477,13 @@ final class DataviewOverlays {
     private weak var textView: NSTextView?
     private var hosts: [NSHostingView<AnyView>] = []
     private var models: [DataviewModel] = []
+    /// Kept per block body (its code without the opening line), so moving a widget keeps its height.
     private(set) var heights: [String: CGFloat] = [:]
+    /// A floating widget being dragged or resized: its frame in the text view until the drag ends.
+    private var liveFrame: (index: Int, frame: NSRect)?
+    private var exclusions: [NSRect] = []
+    /// Room kept between a floating widget and the text around it.
+    static let gap: CGFloat = 12
     var vault: () -> VaultStore?
     var noteID: () -> String?
     var onOpen: (String) -> Void
@@ -453,7 +507,8 @@ final class DataviewOverlays {
             models.removeLast()
         }
         guard !found.isEmpty, let tv = textView, let vault = vault(),
-              let lm = tv.layoutManager, let container = tv.textContainer else { return }
+              let lm = tv.layoutManager, let container = tv.textContainer else { setExclusions([]); return }
+        var floats: [NSRect] = []
         lm.ensureLayout(for: container)
         let o = tv.textContainerOrigin
         let pad = container.lineFragmentPadding
@@ -484,6 +539,13 @@ final class DataviewOverlays {
                     guard let self, let model else { return }
                     self.setHeight(h, for: model.query)
                 }
+                model.onToggleFloat = { [weak self, weak model] in
+                    guard let self, let model else { return }
+                    self.toggleFloat(model.query)
+                }
+                let index = k
+                model.onFloatMove = { [weak self] t, done in self?.moveFloat(index, by: t, done: done) }
+                model.onFloatResize = { [weak self] dw, done in self?.resizeFloat(index, by: dw, done: done) }
                 let host = NSHostingView(rootView: AnyView(DataviewView(model: model).environment(vault)))
                 tv.addSubview(host)
                 models.append(model)
@@ -492,11 +554,116 @@ final class DataviewOverlays {
             let query = ns.substring(with: b.range)
             if model.query != query { model.query = query }
             if model.noteID != noteID() { model.noteID = noteID() }
-            if abs(model.width - width) > 0.5 { model.width = width }
-            let height = heights[query] ?? Self.defaultHeight
-            let glyph = lm.glyphIndexForCharacter(at: min(b.range.location, max(ns.length - 1, 0)))
-            let line = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            hosts[k].frame = NSRect(x: o.x + pad, y: o.y + line.maxY - height, width: width, height: height)
+            let height = heights[DataviewJS.code(of: query)] ?? Self.defaultHeight
+            if let f = WidgetFloat.of(block: query) {
+                // Floating: where its opening line says, the text flowing around it.
+                let w = min(max(160, f.w), width)
+                let x = min(max(0, f.x), width - w)
+                if !model.floating { model.floating = true }
+                if abs(model.width - w) > 0.5 { model.width = w }
+                var frame = NSRect(x: o.x + pad + x, y: o.y + max(0, f.y), width: w, height: height)
+                if let live = liveFrame, live.index == k { frame = live.frame }
+                hosts[k].frame = frame
+                floats.append(NSRect(x: frame.minX - o.x - Self.gap, y: frame.minY - o.y - Self.gap / 2,
+                                     width: frame.width + 2 * Self.gap, height: frame.height + Self.gap * 1.5))
+            } else {
+                if model.floating { model.floating = false }
+                if abs(model.width - width) > 0.5 { model.width = width }
+                let glyph = lm.glyphIndexForCharacter(at: min(b.range.location, max(ns.length - 1, 0)))
+                let line = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                hosts[k].frame = NSRect(x: o.x + pad, y: o.y + line.maxY - height, width: width, height: height)
+            }
+        }
+        setExclusions(floats)
+    }
+
+    /// The text keeps out of the floating widgets' rectangles (TextKit's exclusion paths).
+    private func setExclusions(_ rects: [NSRect]) {
+        guard rects != exclusions, let container = textView?.textContainer else { return }
+        exclusions = rects
+        container.exclusionPaths = rects.map { NSBezierPath(rect: $0) }
+    }
+
+    // MARK: Floating widgets
+
+    private func block(_ k: Int) -> (range: NSRange, text: String)? {
+        guard let tv = textView, models.indices.contains(k) else { return nil }
+        let r = (tv.string as NSString).range(of: models[k].query)
+        return r.location == NSNotFound ? nil : (r, models[k].query)
+    }
+
+    /// Writes a new placement into the block's opening line (one undoable change).
+    private func writeFloat(_ k: Int, _ f: WidgetFloat?) {
+        guard let tv = textView, let b = block(k) else { return }
+        let ns = tv.string as NSString
+        let lineRange = ns.lineRange(for: NSRange(location: b.range.location, length: 0))
+        var line = ns.substring(with: lineRange)
+        let newline = line.hasSuffix("\n") ? "\n" : ""
+        if !newline.isEmpty { line.removeLast() }
+        let new = WidgetFloat.fenceLine(line, with: f) + newline
+        guard new != line + newline, tv.shouldChangeText(in: lineRange, replacementString: new) else { return }
+        tv.textStorage?.replaceCharacters(in: lineRange, with: new)
+        tv.didChangeText()
+    }
+
+    private func containerWidth() -> CGFloat {
+        guard let c = textView?.textContainer else { return 600 }
+        return max(80, c.size.width - 2 * c.lineFragmentPadding)
+    }
+
+    private func snap(_ v: CGFloat) -> CGFloat { (v / 8).rounded() * 8 }
+
+    private func moveFloat(_ k: Int, by t: CGSize, done: Bool) {
+        guard let tv = textView, hosts.indices.contains(k), let b = block(k), let f = WidgetFloat.of(block: b.text) else { return }
+        let width = containerWidth()
+        let w = min(max(160, f.w), width)
+        let x = min(max(0, snap(min(max(0, f.x), width - w) + t.width)), width - w)
+        let y = max(0, snap(max(0, f.y) + t.height))
+        if done {
+            liveFrame = nil
+            writeFloat(k, WidgetFloat(x: x, y: y, w: w))
+        } else {
+            let o = tv.textContainerOrigin, pad = tv.textContainer?.lineFragmentPadding ?? 0
+            let frame = NSRect(x: o.x + pad + x, y: o.y + y, width: w, height: hosts[k].frame.height)
+            liveFrame = (k, frame)
+            hosts[k].frame = frame
+            setExclusions(exclusions.enumerated().map { $0.offset == floatIndex(k) ? NSRect(x: frame.minX - o.x - Self.gap, y: frame.minY - o.y - Self.gap / 2, width: frame.width + 2 * Self.gap, height: frame.height + Self.gap * 1.5) : $0.element })
+        }
+    }
+
+    private func resizeFloat(_ k: Int, by dw: CGFloat, done: Bool) {
+        guard let tv = textView, hosts.indices.contains(k), let b = block(k), let f = WidgetFloat.of(block: b.text) else { return }
+        let width = containerWidth()
+        let x = min(max(0, f.x), width - 160)
+        let w = min(max(160, snap(f.w + dw)), width - x)
+        if done {
+            liveFrame = nil
+            writeFloat(k, WidgetFloat(x: x, y: f.y, w: w))
+        } else {
+            var frame = hosts[k].frame
+            frame.size.width = w
+            liveFrame = (k, frame)
+            hosts[k].frame = frame
+            models[k].width = w
+            _ = tv
+        }
+    }
+
+    /// Which entry of `exclusions` belongs to the k-th block (floating blocks only, in order).
+    private func floatIndex(_ k: Int) -> Int {
+        models.prefix(k).filter(\.floating).count
+    }
+
+    /// Floating ⇄ in the line. A new floating widget goes to the right half, level with where it was.
+    private func toggleFloat(_ query: String) {
+        guard let k = models.firstIndex(where: { $0.query == query }), let tv = textView else { return }
+        if WidgetFloat.of(block: query) != nil {
+            writeFloat(k, nil)
+        } else {
+            let width = containerWidth()
+            let w = snap(min(360, max(220, width * 0.45)))
+            let y = hosts.indices.contains(k) ? max(0, hosts[k].frame.minY - tv.textContainerOrigin.y) : 0
+            writeFloat(k, WidgetFloat(x: width - w, y: snap(y), w: w))
         }
     }
 
@@ -504,8 +671,9 @@ final class DataviewOverlays {
 
     private func setHeight(_ h: CGFloat, for query: String) {
         let height = ceil(h)
-        guard abs((heights[query] ?? Self.defaultHeight) - height) > 0.5 else { return }
-        heights[query] = height
+        let key = DataviewJS.code(of: query)
+        guard abs((heights[key] ?? Self.defaultHeight) - height) > 0.5 else { return }
+        heights[key] = height
         DispatchQueue.main.async { [weak self] in self?.onResize() }
     }
 

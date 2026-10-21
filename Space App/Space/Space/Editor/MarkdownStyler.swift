@@ -181,8 +181,12 @@ struct MarkdownStyler {
                     i = last + 1
                     continue
                 }
-                if dataviewEnabled, !revealAll, [Dataview.language, DataviewJS.language].contains(lang.lowercased()), j < lines.count, !touches(range) {
-                    reserve(storage, ns: ns, lines: Array(lines[i...last]), height: dataviewHeights[ns.substring(with: range)] ?? 120)
+                let firstWord = lang.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map { String($0).lowercased() } ?? ""
+                if dataviewEnabled, !revealAll, [Dataview.language, DataviewJS.language].contains(firstWord), j < lines.count, !touches(range) {
+                    // A floating widget takes no room in the text (the text flows around it instead).
+                    let floating = WidgetFloat.parse(ns.substring(with: line)) != nil
+                    reserve(storage, ns: ns, lines: Array(lines[i...last]),
+                            height: floating ? 0.01 : (dataviewHeights[DataviewJS.code(of: ns.substring(with: range))] ?? 120), spaced: !floating)
                     blocks.append(EditorBlock(kind: .dataview, range: range))
                     i = last + 1
                     continue
