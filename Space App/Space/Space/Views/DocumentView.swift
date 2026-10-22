@@ -75,7 +75,7 @@ struct DocumentView: View {
         }
         .padding(.horizontal, 24)
         .padding(.top, 18)
-        .background(SpaceBackground())
+        .background(PaneBackdrop())
         .task { await load() }
         .onDisappear { flush() }
     }

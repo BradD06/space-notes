@@ -10,19 +10,22 @@ struct SidebarView: View {
     @Environment(Workspace.self) private var workspace
     @AppStorage("space.collapsedUniverses") private var collapsedRaw = ""
     @AppStorage("space.sidebarCompact") private var compact = false
+    @AppStorage(Appearance.key) private var appearance = Appearance.dark.rawValue
     @State private var creating: CreateKind?
     @State private var creatingVault = false
     @State private var openingVault = false
     @State private var deleting: DeleteTarget?
     @State private var search = ""
     @State private var pickingCover = false
+    @State private var foldHover = false
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             brandRow
             vaultCard
             GlowDivider()
-            searchField                          // the map button, and search beside it when there's room
+            searchField                          // in the folded rail: a magnifier that unfolds the panel
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     if !search.isEmpty && !compact {
@@ -46,7 +49,7 @@ struct SidebarView: View {
         // The round fold button sits on the panel's edge, half outside, as in the reference.
         .overlay(alignment: .topTrailing) {
             // Below the panes' tab bars, so it never covers a tab.
-            foldButton.offset(x: 13, y: 74)
+            foldButton.offset(x: 22, y: 64)
         }
         .animation(.smooth(duration: 0.3), value: compact)
         #if !os(macOS)
@@ -136,13 +139,19 @@ struct SidebarView: View {
         Button { compact.toggle() } label: {
             Image(systemName: compact ? "chevron.right" : "chevron.left")
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Theme.ground)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Theme.ink))
-                .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
+                .foregroundStyle(Theme.ink)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(Theme.chip))
+                .overlay(Circle().strokeBorder(Theme.glassEdge))
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                .scaleEffect(foldHover ? 1.08 : 1)
+                .frame(width: 44, height: 44)            // a comfortable target around the small chip
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .onHover { foldHover = $0 }
+        .animation(.smooth(duration: 0.15), value: foldHover)
+        .accessibilityLabel(compact ? "Развернуть меню" : "Свернуть меню")
         .tip(compact ? "Развернуть панель (⌃⌘S)" : "Свернуть панель (⌃⌘S)")
         .keyboardShortcut("s", modifiers: [.command, .control])
     }
@@ -177,54 +186,44 @@ struct SidebarView: View {
         .tip("Дашборд хранилища")
     }
 
-    /// Search capsule: filters the stars by name.
+    /// Search field: filters the stars by name. In the folded rail it is a magnifier that unfolds the panel.
     private var searchField: some View {
-        HStack(spacing: 10) {
-            mapButton
-            if !compact {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
-                TextField("", text: $search, prompt: Text("ПОИСК…").foregroundStyle(Theme.muted))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.ink)
-                if !search.isEmpty {
-                    Button { search = "" } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted)
-                    }
-                    .buttonStyle(.plain)
-                    .tip("Очистить поиск")
+        Group {
+            if compact {
+                IconButton(icon: "magnifyingglass", help: "Поиск") {
+                    compact = false
+                    Task { @MainActor in try? await Task.sleep(for: .milliseconds(350)); searchFocused = true }
                 }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(Capsule().fill(Color.white.opacity(0.10)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.muted)
+                    TextField("", text: $search, prompt: Text("Поиск…").foregroundStyle(Theme.muted))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Theme.ink)
+                        .focused($searchFocused)
+                    if !search.isEmpty {
+                        Button { search = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .tip("Очистить поиск")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.wash.opacity(0.07)))
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(searchFocused ? Theme.accentText : Theme.line, lineWidth: 1))
+                // Focus: a soft ring of the accent around the field.
+                .background(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(Theme.accentGlow, lineWidth: searchFocused ? 3 : 0).padding(-1.5))
+                .animation(.smooth(duration: 0.15), value: searchFocused)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, compact ? 0 : 18)
+        .padding(.horizontal, compact ? 0 : 14)
         .padding(.top, 12)
         .padding(.bottom, 4)
-    }
-
-    /// "Карта космоса": a round button by the search; red while the map is open.
-    private var mapButton: some View {
-        let selected = vault.selection == .map
-        return Button {
-            vault.selection = .map
-            map.go(to: .multiverse)
-        } label: {
-            Image(systemName: "sparkles")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(selected ? Color.white : Theme.ground)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(selected ? Theme.accent : Theme.ink.opacity(0.85)))
-                .shadow(color: selected ? Theme.accent.opacity(0.45) : .clear, radius: 6)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .tip("Карта космоса")
     }
 
     private var searchResults: some View {
@@ -276,6 +275,12 @@ struct SidebarView: View {
             BarButton(icon: "folder", help: "Открыть другое хранилище…") { openingVault = true }
             BarButton(icon: "externaldrive.badge.plus", help: "Новое хранилище…") { creatingVault = true }
             BarButton(icon: "arrow.clockwise", help: "Перечитать хранилище") { Task { await vault.reload(showingProgress: true) } }
+            BarButton(icon: appearance == Appearance.light.rawValue ? "moon" : "sun.max",
+                      help: appearance == Appearance.light.rawValue ? "Тёмная тема" : "Светлая тема") {
+                withAnimation(.smooth(duration: 0.3)) {
+                    appearance = (appearance == Appearance.light.rawValue ? Appearance.dark : .light).rawValue
+                }
+            }
             BarButton(icon: "rectangle.portrait.and.arrow.right", help: "Закрыть хранилище", destructive: true) { vault.close() }
         }
         return Group {
@@ -429,7 +434,7 @@ struct SidebarView: View {
                 Text((id as NSString).pathExtension.uppercased())
                     .font(Theme.mono(8.5)).foregroundStyle(selected ? Color.white.opacity(0.7) : Theme.faint)
                     .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(selected ? 0.15 : 0.06)))
+                    .background(RoundedRectangle(cornerRadius: 4).fill((selected ? Color.white : Theme.wash).opacity(selected ? 0.15 : 0.06)))
                     .fixedSize()
             }
         }
@@ -565,8 +570,8 @@ private struct Card: ViewModifier {
     let radius: CGFloat
     func body(content: Content) -> some View {
         content
-            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Color.white.opacity(0.045)))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.white.opacity(0.07)))
+            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Theme.wash.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Theme.wash.opacity(0.07)))
     }
 }
 
@@ -640,23 +645,30 @@ struct RoundIcon: View {
     }
 }
 
-/// The selection: a red band across the whole panel; hover is a faint light band.
+/// The selection: a pill of the accent with a soft glow, set in from the panel's edges; hover is a faint wash.
 struct SelectionBand: View {
     let selected: Bool
     let hover: Bool
 
     var body: some View {
-        Rectangle()
-            .fill(selected ? AnyShapeStyle(LinearGradient(colors: [Theme.accent, Theme.accent.opacity(0.85)], startPoint: .leading, endPoint: .trailing))
-                           : AnyShapeStyle(Color.white.opacity(hover ? 0.05 : 0)))
-            .shadow(color: selected ? Theme.accent.opacity(0.35) : .clear, radius: 8)
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        Group {
+            if selected {
+                shape.fill(Theme.accent)
+                    .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.28), .clear], startPoint: .top, endPoint: .center), lineWidth: 1))
+                    .shadow(color: Theme.accentGlow, radius: 10, y: 4)
+            } else {
+                shape.fill(Theme.wash.opacity(hover ? 0.07 : 0))
+            }
+        }
+        .padding(.horizontal, 8)
     }
 }
 
 /// A thin line that fades out at both ends.
 struct GlowDivider: View {
     var body: some View {
-        LinearGradient(colors: [.clear, Color.white.opacity(0.28), .clear], startPoint: .leading, endPoint: .trailing)
+        LinearGradient(colors: [.clear, Theme.line, .clear], startPoint: .leading, endPoint: .trailing)
             .frame(height: 1)
             .padding(.horizontal, 22)
     }
@@ -709,7 +721,7 @@ private struct IconButton: View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 13))
                 .frame(width: 28, height: 26)
-                .background(Circle().fill(Color.white.opacity(hover ? 0.08 : 0)).frame(width: 26, height: 26))
+                .background(Circle().fill(Theme.wash.opacity(hover ? 0.1 : 0)).frame(width: 26, height: 26))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -738,7 +750,7 @@ private struct TreeRow<Label: View>: View {
             // Guide lines for every level above this one.
             HStack(spacing: 0) {
                 ForEach(0..<level, id: \.self) { _ in
-                    Rectangle().fill(Color.white.opacity(selected ? 0.25 : 0.08)).frame(width: 1).frame(width: 16)
+                    Rectangle().fill(Theme.wash.opacity(selected ? 0.25 : 0.08)).frame(width: 1).frame(width: 16)
                 }
             }
             if expandable {
@@ -758,7 +770,7 @@ private struct TreeRow<Label: View>: View {
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundStyle(Theme.ink.opacity(0.85))
                     .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
-                    .background(Capsule().fill(Color.white.opacity(0.10)))
+                    .background(Capsule().fill(Theme.wash.opacity(0.10)))
             }
         }
         .font(.system(size: 13.5))
@@ -812,7 +824,7 @@ private struct ColorGrid: View {
                     } label: {
                         Circle().fill(Color(hex: s.hex))
                             .frame(width: 26, height: 26)
-                            .overlay(Circle().strokeBorder(Color.white.opacity(current == s.hex ? 0.9 : 0), lineWidth: 2).padding(-4))
+                            .overlay(Circle().strokeBorder(Theme.ink.opacity(current == s.hex ? 0.9 : 0), lineWidth: 2).padding(-4))
                     }
                     .buttonStyle(.plain)
                     .help(s.name)                     // in a popover: the system tag
@@ -1066,7 +1078,7 @@ private struct OptionalRootDrop: ViewModifier {
     }
 }
 
-/// A round button of the vault bar; it fills with light under the pointer (red for closing the vault).
+/// A round glass button of the vault bar; it brightens under the pointer (red for closing the vault).
 private struct BarButton: View {
     let icon: String
     let help: String
@@ -1078,10 +1090,10 @@ private struct BarButton: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(hover ? (destructive ? Color.white : Theme.ground) : Theme.ink.opacity(0.85))
+                .foregroundStyle(hover && destructive ? Color.white : Theme.ink.opacity(hover ? 1 : 0.85))
                 .frame(width: 32, height: 32)
-                .background(Circle().fill(hover ? (destructive ? Theme.accent : Theme.ink.opacity(0.9)) : Color.white.opacity(0.08)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(hover ? 0 : 0.08)))
+                .background(Circle().fill(hover ? (destructive ? Color(hex: 0xD12F35) : Theme.wash.opacity(0.14)) : Theme.wash.opacity(0.07)))
+                .overlay(Circle().strokeBorder(Theme.glassEdge))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

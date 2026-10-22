@@ -233,7 +233,7 @@ private struct PaneView: View {
                 .preference(key: PaneFrames.self, value: [pane.id: g.frame(in: .global)])
             }
         }
-        .background(GlassPanel(tint: Theme.ground.opacity(focused ? 0.5 : 0.62)))
+        .background(GlassPanel(density: focused ? 1.35 : 1.55))
         .clipShape(RoundedRectangle(cornerRadius: Theme.panelRadius, style: .continuous))
         .overlay {
             // The focused pane gets a faint accent rim.
@@ -432,7 +432,7 @@ private struct TabChip: View {
             .onTapGesture(perform: onSelect)
             Button(action: onClose) {
                 Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 18, height: 18)
-                    .background(Circle().fill(Color.white.opacity(hover ? 0.08 : 0)))
+                    .background(Circle().fill(Theme.wash.opacity(hover ? 0.1 : 0)))
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -448,7 +448,7 @@ private struct TabChip: View {
                     .glassEffect(.regular.tint((focused ? color : Theme.accent).opacity(focused ? 0.14 : 0.05)), in: .capsule)
                     .allowsHitTesting(false)
             } else {
-                Capsule().fill(Color.white.opacity(hover ? 0.05 : 0))
+                Capsule().fill(Theme.wash.opacity(hover ? 0.07 : 0))
             }
         }
         .contentShape(Capsule())

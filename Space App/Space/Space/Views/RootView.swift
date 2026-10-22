@@ -42,7 +42,7 @@ struct MainView: View {
                 .frame(width: compactSidebar ? 78 : 270)
                 // A floating panel of Liquid Glass from the top of the window, as in Finder on macOS 26:
                 // the window's buttons sit inside it (placed by WindowButtons below).
-                .background(GlassPanel(tint: Theme.sidebar.opacity(0.45)))
+                .background(GlassPanel())
                 .padding(.top, Self.sidebarTop)
                 .padding(.bottom, 8)
                 .ignoresSafeArea(.container, edges: .top)
@@ -160,9 +160,23 @@ private struct MainChrome: ViewModifier {
     let map: MapModel
     let workspace: Workspace
     @Binding var pickingAccess: Bool
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compactMapButton: Bool { sizeClass == .compact }
+    #else
+    private let compactMapButton = false
+    #endif
 
     func body(content: Content) -> some View {
         content
+        // The star map lives in a floating button in the corner rather than in the menu: always one click (or ⌘G) away.
+        .overlay(alignment: .bottomTrailing) {
+            StarMapButton(selected: vault.selection == .map, compact: compactMapButton) {
+                vault.selection = .map
+                map.go(to: .multiverse)
+            }
+            .padding(compactMapButton ? 16 : 24)
+        }
         .environment(map)
         .environment(workspace)
         // Whatever gets picked (sidebar, map, links) opens in the focused pane. Deferred one turn so a click
@@ -193,17 +207,17 @@ private struct WriteAccessBanner: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: "lock.fill").foregroundStyle(Theme.accent)
+            Image(systemName: "lock.fill").foregroundStyle(Theme.accentText)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Хранилище открыто только для чтения").font(.callout.weight(.semibold))
                 Text("Разреши запись, чтобы создавать вселенные, созвездия и звёзды и сохранять правки.")
                     .font(.caption).foregroundStyle(Theme.muted)
             }
             Button("Дать доступ", action: action)
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.spaceGlow)
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
-        .glassEffect(.regular, in: .capsule)
+        .background(GlassPanel(radius: 32, density: 1.4))
         .padding(.horizontal, 16)
     }
 }

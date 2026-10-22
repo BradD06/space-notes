@@ -25,7 +25,7 @@ struct DashboardView: View {
                 NoteView(noteID: "dashboard", file: url).id(url)
             }
         }
-        .background(SpaceBackground())
+        .background(PaneBackdrop())
         .onAppear { title = profile.title }
         .onChange(of: profile.title) { _, t in if !editingTitle { title = t } }
         .fileImporter(isPresented: $pickingCover, allowedContentTypes: [.image]) { result in

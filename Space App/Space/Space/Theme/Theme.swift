@@ -1,16 +1,53 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 enum Theme {
-    // Graphite glass: neutral greys over a blurred desktop, one red accent for what is selected.
-    static let ground = Color(hex: 0x1C1C1E)
-    static let sidebar = Color(hex: 0x2A2A2D)
-    static let surface = Color(hex: 0x2C2C2F)
-    static let surfaceHigh = Color(hex: 0x38383C)
-    static let line = Color.white.opacity(0.08)
-    static let ink = Color(hex: 0xF2F2F2)
-    static let muted = Color(hex: 0x9E9EA4)
-    static let faint = Color(hex: 0x4A4A4F)
-    static let accent = Color(hex: 0xC8312B)
+    // Translucent glass over a nebula: cool ink-blue glass in the dark theme, milky glass in the light one.
+    // Text is always a solid colour (never see-through), picked to stay readable over the brightest spot behind it.
+    static let ground = adaptive(dark: 0x10121E, light: 0xF4F1FA)
+    static let sidebar = adaptive(dark: 0x161827, light: 0xFFFFFF)
+    static let surface = adaptive(dark: 0x1E2032, light: 0xF7F5FC)
+    static let surfaceHigh = adaptive(dark: 0x2A2D44, light: 0xECE8F6)
+    static let line = adaptive(dark: 0xFFFFFF, light: 0x1E193C, darkOpacity: 0.10, lightOpacity: 0.10)
+    static let ink = adaptive(dark: 0xF4F5FB, light: 0x15141D)
+    static let muted = adaptive(dark: 0xA6A9B9, light: 0x47455A)
+    static let faint = adaptive(dark: 0x5A5D70, light: 0x9A98AC)
+    static let accent = adaptive(dark: 0x5B4BEA, light: 0x4F3FE0)
+    /// The accent as text or an outline on glass (the filled accent is too dark to read on dark glass).
+    static let accentText = adaptive(dark: 0xBDB4FF, light: 0x4434C9)
+    static let accentGlow = adaptive(dark: 0x7C6CFF, light: 0x4F3FE0, darkOpacity: 0.5, lightOpacity: 0.35)
+
+    /// Light washes on glass: hover, chips, guide lines. White in the dark theme, ink in the light one.
+    static let wash = adaptive(dark: 0xFFFFFF, light: 0x1E193C)
+    /// A small solid chip floating over glass (the fold arrow, labels over pictures).
+    static let chip = adaptive(dark: 0x0A0C16, light: 0xFFFFFF, darkOpacity: 0.78, lightOpacity: 0.88)
+
+    // The glass itself.
+    static let glassTint = adaptive(dark: 0x10121E, light: 0xFFFFFF)
+    static let glassEdge = adaptive(dark: 0xFFFFFF, light: 0xFFFFFF, darkOpacity: 0.13, lightOpacity: 0.6)
+    static let glassSheen = adaptive(dark: 0xFFFFFF, light: 0xFFFFFF, darkOpacity: 0.12, lightOpacity: 0.55)
+    static let glassRim = adaptive(dark: 0xFFFFFF, light: 0xFFFFFF, darkOpacity: 0.55, lightOpacity: 1)
+    static let glassRim2 = adaptive(dark: 0xA096FF, light: 0xFFFFFF, darkOpacity: 0.35, lightOpacity: 0.6)
+    static let glassDrop = adaptive(dark: 0x000000, light: 0x32285A, darkOpacity: 0.45, lightOpacity: 0.18)
+
+    /// A colour with one value for the dark theme and one for the light theme, resolved when drawn.
+    static func adaptive(dark: UInt32, light: UInt32, darkOpacity: Double = 1, lightOpacity: Double = 1) -> Color {
+        #if os(macOS)
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua
+                ? NSColor(hex: light, alpha: lightOpacity) : NSColor(hex: dark, alpha: darkOpacity)
+        })
+        #else
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .light
+                ? UIColor(hex: light, alpha: lightOpacity) : UIColor(hex: dark, alpha: darkOpacity)
+        })
+        #endif
+    }
 
     /// Corner radii: rounded, soft panels in the spirit of macOS 26.
     static let panelRadius: CGFloat = 20
@@ -32,6 +69,29 @@ enum Theme {
 
     static let serif = Font.system(.body, design: .serif)
     static func mono(_ size: CGFloat) -> Font { .system(size: size, weight: .medium, design: .monospaced) }
+}
+
+#if os(macOS)
+extension NSColor {
+    convenience init(hex: UInt32, alpha: Double) {
+        self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                  blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
+    }
+}
+#else
+extension UIColor {
+    convenience init(hex: UInt32, alpha: Double) {
+        self.init(red: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                  blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
+    }
+}
+#endif
+
+/// The app's look: dark or light, the user's choice (dark by default).
+enum Appearance: String {
+    case dark, light
+    static let key = "space.appearance"
+    var scheme: ColorScheme { self == .light ? .light : .dark }
 }
 
 extension Color {
@@ -104,23 +164,39 @@ final class UniverseColors {
     }
 }
 
-/// A rounded pane of Liquid Glass, tinted to the slate theme. Used only as a background, so it never takes clicks.
+/// A rounded pane of translucent glass: the scene shows through, blurred and toned down (darker in the dark theme,
+/// lighter in the light one) so text on it stays readable. A diagonal sheen and a rim that glows brighter at the
+/// top-left make it read as a slab of glass. Used only as a background, so it never takes clicks.
+/// `density` scales how solid it is: 1 is the sidebar's glass, more for panes full of text.
 struct GlassPanel: View {
     var radius: CGFloat = Theme.panelRadius
-    var tint: Color = Theme.ground.opacity(0.45)
+    var density: Double = 1
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        Color.clear
-            .glassEffect(.regular.tint(tint), in: .rect(cornerRadius: radius))
-            // A soft sheen from the top, like frosted glass catching light.
-            .overlay(shape.fill(LinearGradient(colors: [Color.white.opacity(0.07), .clear], startPoint: .top, endPoint: .center)))
-            .overlay(shape.strokeBorder(
-                LinearGradient(colors: [Color.white.opacity(0.30), Color.white.opacity(0.06), Color.white.opacity(0.14)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing),
-                lineWidth: 1))
-            .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
-            .allowsHitTesting(false)
+        let alpha = min(0.95, (scheme == .light ? 0.56 : 0.42) * density)
+        Group {
+            if reduceTransparency {
+                // Asked for less transparency: nearly solid, no blur.
+                shape.fill(Theme.glassTint.opacity(0.97))
+            } else {
+                Color.clear
+                    .glassEffect(.regular.tint(Theme.glassTint.opacity(alpha)), in: .rect(cornerRadius: radius))
+                    // A wash that tones the scene behind down, like the lens of the mockup.
+                    .overlay(shape.fill(Theme.glassTint.opacity(alpha * 0.55)))
+                    // The diagonal highlight, as if light falls on the glass from the top left.
+                    .overlay(shape.fill(LinearGradient(colors: [Theme.glassSheen, .clear], startPoint: .topLeading, endPoint: UnitPoint(x: 0.42, y: 0.5))))
+            }
+        }
+        .overlay(shape.strokeBorder(Theme.glassEdge, lineWidth: 1))
+        // The glowing rim: bright at the top left, a cooler glint at the bottom right, clear between.
+        .overlay(shape.strokeBorder(LinearGradient(stops: [.init(color: Theme.glassRim, location: 0), .init(color: .clear, location: 0.3),
+                                                           .init(color: .clear, location: 0.7), .init(color: Theme.glassRim2, location: 1)],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1))
+        .shadow(color: Theme.glassDrop, radius: 26, y: 12)
+        .allowsHitTesting(false)
     }
 }
 

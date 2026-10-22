@@ -8,6 +8,7 @@ struct SpaceApp: App {
     @State private var vault = VaultStore()
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasAway = false
+    @AppStorage(Appearance.key) private var appearance = Appearance.dark.rawValue
 
     init() {
         #if os(macOS)
@@ -20,7 +21,7 @@ struct SpaceApp: App {
         WindowGroup {
             RootView()
                 .environment(vault)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme((Appearance(rawValue: appearance) ?? .dark).scheme)
                 .tint(Theme.accent)
                 .task { await vault.restore() }
                 #if os(iOS)

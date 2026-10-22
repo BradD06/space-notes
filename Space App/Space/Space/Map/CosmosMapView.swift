@@ -35,6 +35,8 @@ struct CosmosMapView: View {
             .padding(12)
         }
         .background(SpaceBackground())
+        // The star map is a night sky in both themes: white stars need the dark.
+        .environment(\.colorScheme, .dark)
         .task(id: vault.generation) {
             model.sync(with: vault.cosmos, atlas: atlas)
             takePendingStar()
