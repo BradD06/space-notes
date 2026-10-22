@@ -5,49 +5,41 @@ nonisolated enum AtlasLayout {
 
     // MARK: Atlas: regions sized by note count
 
+    /// One strip of a treemap: which items it holds, and whether it is a column (else a row).
+    typealias Strip = (items: Range<Int>, column: Bool)
+
     /// Squarified treemap: rectangles with areas proportional to `weights`, as close to square as possible,
     /// in the order given (biggest first reads best). `gap` is left between neighbours.
-    static func treemap(_ weights: [Double], in rect: CGRect, gap: CGFloat) -> [CGRect] {
+    /// Pass `strips` from another set of weights to keep that arrangement: then the rectangles only
+    /// grow and shrink in place, so a change of weights can be animated without anything jumping.
+    static func treemap(_ weights: [Double], in rect: CGRect, gap: CGFloat, strips given: [Strip]? = nil) -> [CGRect] {
         let n = weights.count
         guard n > 0, rect.width > 1, rect.height > 1 else { return Array(repeating: .zero, count: n) }
-        let total = max(weights.reduce(0, +), 0.0001)
-        let scale = Double(rect.width * rect.height) / total
-        let area = weights.map { max($0, 0.0001) * scale }
+        let strips = given ?? self.strips(weights, in: rect)
+        let area = areas(weights, in: rect)
         var result = Array(repeating: CGRect.zero, count: n)
         var free = rect
-        var i = 0
-        func worst(_ row: ArraySlice<Double>, _ side: Double) -> Double {
-            let sum = row.reduce(0, +), hi = row.max() ?? 0, lo = row.min() ?? 1
-            return max(side * side * hi / (sum * sum), sum * sum / (side * side * lo))
-        }
-        while i < n {
-            let side = Double(min(free.width, free.height))
-            var j = i + 1
-            while j < n, worst(area[i...j], side) <= worst(area[i..<j], side) { j += 1 }
-            let row = i..<j
-            let sum = area[row].reduce(0, +)
-            if free.width >= free.height {
-                // A column on the left.
-                let w = CGFloat(sum / Double(free.height))
+        for strip in strips where strip.items.upperBound <= n {
+            let sum = area[strip.items].reduce(0, +)
+            if strip.column {
+                let w = min(free.width, CGFloat(sum / Double(max(free.height, 0.001))))
                 var y = free.minY
-                for k in row {
-                    let h = CGFloat(area[k]) / w
+                for k in strip.items {
+                    let h = CGFloat(area[k]) / max(w, 0.001)
                     result[k] = CGRect(x: free.minX, y: y, width: w, height: h)
                     y += h
                 }
                 free = CGRect(x: free.minX + w, y: free.minY, width: free.width - w, height: free.height)
             } else {
-                // A row at the top.
-                let h = CGFloat(sum / Double(free.width))
+                let h = min(free.height, CGFloat(sum / Double(max(free.width, 0.001))))
                 var x = free.minX
-                for k in row {
-                    let w = CGFloat(area[k]) / h
+                for k in strip.items {
+                    let w = CGFloat(area[k]) / max(h, 0.001)
                     result[k] = CGRect(x: x, y: free.minY, width: w, height: h)
                     x += w
                 }
                 free = CGRect(x: free.minX, y: free.minY + h, width: free.width, height: free.height - h)
             }
-            i = j
         }
         // Gaps only between neighbours, not along the outer edge.
         return result.map { r in
@@ -55,6 +47,43 @@ nonisolated enum AtlasLayout {
             let top = r.minY > rect.minY + 0.5 ? gap / 2 : 0, bottom = r.maxY < rect.maxY - 0.5 ? gap / 2 : 0
             return CGRect(x: r.minX + left, y: r.minY + top, width: max(0, r.width - left - right), height: max(0, r.height - top - bottom))
         }
+    }
+
+    private static func areas(_ weights: [Double], in rect: CGRect) -> [Double] {
+        let total = max(weights.reduce(0, +), 0.0001)
+        let scale = Double(rect.width * rect.height) / total
+        return weights.map { max($0, 0.0001) * scale }
+    }
+
+    /// The squarified arrangement: strips filled while they keep their rectangles close to square.
+    static func strips(_ weights: [Double], in rect: CGRect) -> [Strip] {
+        let n = weights.count
+        guard n > 0, rect.width > 1, rect.height > 1 else { return [] }
+        let area = areas(weights, in: rect)
+        func worst(_ row: ArraySlice<Double>, _ side: Double) -> Double {
+            let sum = row.reduce(0, +), hi = row.max() ?? 0, lo = row.min() ?? 1
+            return max(side * side * hi / (sum * sum), sum * sum / (side * side * lo))
+        }
+        var out: [Strip] = []
+        var free = rect
+        var i = 0
+        while i < n {
+            let side = Double(min(free.width, free.height))
+            var j = i + 1
+            while j < n, worst(area[i...j], side) <= worst(area[i..<j], side) { j += 1 }
+            let sum = area[i..<j].reduce(0, +)
+            let column = free.width >= free.height
+            out.append((i..<j, column))
+            if column {
+                let w = CGFloat(sum / Double(free.height))
+                free = CGRect(x: free.minX + w, y: free.minY, width: free.width - w, height: free.height)
+            } else {
+                let h = CGFloat(sum / Double(free.width))
+                free = CGRect(x: free.minX, y: free.minY + h, width: free.width, height: free.height - h)
+            }
+            i = j
+        }
+        return out
     }
 
     /// Room for the title of a region.
@@ -69,17 +98,37 @@ nonisolated enum AtlasLayout {
     }
 
     /// Regions for every group, with their constellations inside. Small groups still get room for a title.
-    static func regions(_ atlas: Atlas, in rect: CGRect) -> [Region] {
-        let total = Double(max(atlas.total, 1))
-        let weights = atlas.groups.map { max(Double($0.count), total * 0.06) }
-        let frames = treemap(weights, in: rect, gap: 20)
-        return zip(atlas.groups, frames).map { g, frame in
-            let inner = CGRect(x: frame.minX + regionPadding, y: frame.minY + regionHeader,
-                               width: frame.width - 2 * regionPadding, height: frame.height - regionHeader - regionPadding)
-            let cw = g.constellations.map { max(Double($0.count), Double(g.count) * 0.08) }
-            let boxes = treemap(cw, in: inner, gap: 10)
-            return Region(groupID: g.id, frame: frame, constellations: zip(g.constellations, boxes).map { ($0.id, $1) })
+    /// `boost` scales groups' shares (a hovered universe grows, the rest give way) while keeping the arrangement.
+    static func regions(_ atlas: Atlas, in rect: CGRect, boost: [Double]? = nil) -> [Region] {
+        let weights = baseWeights(atlas)
+        let arrangement = Self.strips(weights, in: rect)
+        let base = treemap(weights, in: rect, gap: 20, strips: arrangement)
+        let boosted = boost.map { b in weights.enumerated().map { $1 * (b.indices.contains($0) ? b[$0] : 1) } } ?? weights
+        let frames = boost == nil ? base : treemap(boosted, in: rect, gap: 20, strips: arrangement)
+        func inner(_ frame: CGRect) -> CGRect {
+            CGRect(x: frame.minX + regionPadding, y: frame.minY + regionHeader,
+                   width: frame.width - 2 * regionPadding, height: frame.height - regionHeader - regionPadding)
         }
+        return atlas.groups.indices.map { i in
+            let g = atlas.groups[i]
+            let cw = g.constellations.map { max(Double($0.count), Double(g.count) * 0.08) }
+            let boxes = treemap(cw, in: inner(frames[i]), gap: 10, strips: Self.strips(cw, in: inner(base[i])))
+            return Region(groupID: g.id, frame: frames[i], constellations: zip(g.constellations, boxes).map { ($0.id, $1) })
+        }
+    }
+
+    static func baseWeights(_ atlas: Atlas) -> [Double] {
+        let total = Double(max(atlas.total, 1))
+        return atlas.groups.map { max(Double($0.count), total * 0.06) }
+    }
+
+    /// How much the hovered group grows: to about a third of the atlas, at least nearly double, at most six times.
+    static func focusBoost(_ atlas: Atlas, focused: String?) -> [Double] {
+        let weights = baseWeights(atlas)
+        guard let focused, let i = atlas.groups.firstIndex(where: { $0.id == focused }) else { return weights.map { _ in 1 } }
+        let w = weights[i], rest = weights.reduce(0, +) - w
+        let m = min(6, max(1.8, 0.34 * rest / (0.66 * max(w, 0.0001))))
+        return weights.indices.map { $0 == i ? m : 1 }
     }
 
     /// Two regions touch when they face each other across a gap: then their links sit on the shared border.

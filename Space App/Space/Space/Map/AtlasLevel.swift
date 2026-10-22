@@ -5,12 +5,51 @@ import SwiftUI
 /// Links between universes are one band with a number, not hundreds of lines.
 struct AtlasLevel: View {
     let atlas: Atlas
+    @Environment(MapModel.self) private var model
+
+    /// The universe under the pointer grows and the others give way, so it reads at a glance.
+    var body: some View {
+        let focus = atlas.groups.count > 1 ? model.hoveredGroup : nil
+        AtlasBoard(atlas: atlas, boost: Boost(values: AtlasLayout.focusBoost(atlas, focused: focus)))
+            .animation(.smooth(duration: 0.4), value: focus)
+    }
+}
+
+/// How much each universe is grown, as something SwiftUI can animate frame by frame:
+/// regions, stars and labels are all laid out again from the in-between value, so they move together.
+struct Boost: VectorArithmetic {
+    var values: [Double]
+
+    static var zero: Boost { Boost(values: []) }
+
+    static func + (a: Boost, b: Boost) -> Boost { combine(a, b, +) }
+    static func - (a: Boost, b: Boost) -> Boost { combine(a, b, -) }
+
+    /// Vectors of different lengths (zero is empty) are padded with zeros.
+    private static func combine(_ a: Boost, _ b: Boost, _ op: (Double, Double) -> Double) -> Boost {
+        let n = max(a.values.count, b.values.count)
+        return Boost(values: (0..<n).map { op($0 < a.values.count ? a.values[$0] : 0, $0 < b.values.count ? b.values[$0] : 0) })
+    }
+
+    mutating func scale(by rhs: Double) { values = values.map { $0 * rhs } }
+    var magnitudeSquared: Double { values.reduce(0) { $0 + $1 * $1 } }
+}
+
+struct AtlasBoard: View, Animatable {
+    let atlas: Atlas
+    var boost: Boost
     @Environment(VaultStore.self) private var vault
     @Environment(MapModel.self) private var model
 
+    var animatableData: Boost {
+        get { boost }
+        set { boost = newValue }
+    }
+
     var body: some View {
         GeometryReader { geo in
-            let regions = AtlasLayout.regions(atlas, in: CGRect(origin: .zero, size: geo.size).insetBy(dx: 2, dy: 2))
+            let regions = AtlasLayout.regions(atlas, in: CGRect(origin: .zero, size: geo.size).insetBy(dx: 2, dy: 2),
+                                              boost: boost.values.count == atlas.groups.count ? boost.values : nil)
             let frames = Dictionary(uniqueKeysWithValues: regions.map { ($0.groupID, $0.frame) })
             let insights = InsightsCache.insights(vault)
             ZStack(alignment: .topLeading) {
