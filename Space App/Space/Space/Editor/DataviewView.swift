@@ -454,6 +454,7 @@ extension VaultStore {
     func writeFile(_ path: String, text: String) {
         if cosmos.notes[path] != nil { save(path, text: text); return }
         guard let url = url(for: path) else { return }
+        markOwnWrite(path)              // not an outside change: the vault isn't reread for a widget's own file
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 

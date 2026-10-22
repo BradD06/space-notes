@@ -19,6 +19,8 @@ final class VaultStore {
     private(set) var cosmos = Cosmos()
     /// Bumped every time `cosmos` changes, so views can recompute layouts cheaply.
     private(set) var generation = 0
+    /// The vault is being read with the progress overlay up: opening it, or the user asked to reread it.
+    /// Rereads after a file changed run quietly.
     private(set) var isLoading = false
     var errorMessage: String?
     /// A book asked to open at a page (a link like [[Book.pdf#page=42]]): book id → page number (from 1).
@@ -69,6 +71,9 @@ final class VaultStore {
     private(set) var lastMoves: [String: String] = [:]
     /// Each reread gets a number; a slower, older one doesn't overwrite a newer result.
     private var scanNumber = 0
+    /// A quiet reread is running; changes seen meanwhile ask for one more after it instead of a parallel scan.
+    private var rescanning = false
+    private var rescanQueued = false
     /// Parent folder picked when creating a vault; kept open so the new vault stays writable this session.
     private var parentAccess: URL?
 
@@ -96,7 +101,7 @@ final class VaultStore {
         }
         selection = .dashboard
         checkWritable()
-        await reload()
+        await reload(showingProgress: true)
         startWatching()
     }
 
@@ -138,11 +143,11 @@ final class VaultStore {
         selection = .map
     }
 
-    func reload() async {
+    func reload(showingProgress: Bool = false) async {
         guard let root = rootURL else { return }
         scanNumber += 1
         let number = scanNumber
-        isLoading = true
+        if showingProgress { isLoading = true }
         defer { if number == scanNumber { isLoading = false } }
         do {
             let (built, ids) = try await Task.detached(priority: .userInitiated) { () throws -> (Cosmos, [String: UInt64]) in
@@ -212,11 +217,51 @@ final class VaultStore {
         }
         guard !changed.isEmpty else { return }
         // Hidden files (Space's own profile, iCloud placeholders) don't change the cosmos; open pages still check them.
-        let visible = changed.contains { !$0.split(separator: "/").contains { $0.hasPrefix(".") } }
+        let visible = changed.filter { !$0.split(separator: "/").contains { $0.hasPrefix(".") } }
         Task {
-            if visible { await reload() }
+            if !visible.isEmpty { await update(visible, root: root) }
             NotificationCenter.default.post(name: .spaceVaultChangedOutside, object: nil)
         }
+    }
+
+    /// Files that were only edited are reread one by one; anything that adds, removes or moves a star
+    /// (or a folder event that may hide such a change) rereads the whole vault, quietly.
+    private func update(_ paths: [String], root: URL) async {
+        let fm = FileManager.default
+        var edited: [Note] = []
+        var rescan = false
+        for rel in paths {
+            let url = root.appending(path: rel)
+            var isDir: ObjCBool = false
+            let exists = fm.fileExists(atPath: url.path, isDirectory: &isDir)
+            if var note = cosmos.notes[rel] {
+                guard exists else { rescan = true; break }
+                let text = Documents.isNote(rel) ? ((try? String(contentsOf: url, encoding: .utf8)) ?? "") : ""
+                note.links = MarkdownParser.links(in: text)
+                note.tags = MarkdownParser.tags(in: text)
+                note.modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? note.modified
+                if note != cosmos.notes[rel] { edited.append(note) }
+            } else if rel.isEmpty || isDir.boolValue || cosmos.folders.contains(rel)
+                        || Documents.isShown(extension: (rel as NSString).pathExtension) {
+                rescan = true; break
+            }
+            // Anything else (a widget's cache, a temporary file) is not a star: nothing to do.
+        }
+        if rescan {
+            await rescanQuietly()
+        } else if !edited.isEmpty {
+            setCosmos(edited.reduce(cosmos) { $0.updating($1) })
+        }
+    }
+
+    private func rescanQuietly() async {
+        if rescanning { rescanQueued = true; return }
+        rescanning = true
+        repeat {
+            rescanQueued = false
+            await reload()
+        } while rescanQueued
+        rescanning = false
     }
 
     /// Back in the app (iOS suspends file presenters in the background): pick up what changed meanwhile.
@@ -260,6 +305,9 @@ final class VaultStore {
         note.modified = .now
         setCosmos(cosmos.updating(note))
     }
+
+    /// A file of the vault Space is about to write itself: the watcher's echo of it is not an outside change.
+    func markOwnWrite(_ id: String) { ownWrites[id] = .now }
 
     /// Writes a file of the vault in place, coordinated with iCloud and other apps. False (and the error shown) if it failed.
     private func write(_ id: String, _ work: (URL) throws -> Void) -> Bool {
@@ -500,6 +548,8 @@ final class VaultStore {
     // MARK: Private
 
     private func setCosmos(_ new: Cosmos) {
+        // A reread that found nothing new mustn't redraw every page (widgets would restart).
+        if new.notes == cosmos.notes, new.folders == cosmos.folders { return }
         cosmos = new
         generation += 1
     }

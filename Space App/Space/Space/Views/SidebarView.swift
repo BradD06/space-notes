@@ -275,7 +275,7 @@ struct SidebarView: View {
         let buttons = Group {
             BarButton(icon: "folder", help: "Открыть другое хранилище…") { openingVault = true }
             BarButton(icon: "externaldrive.badge.plus", help: "Новое хранилище…") { creatingVault = true }
-            BarButton(icon: "arrow.clockwise", help: "Перечитать хранилище") { Task { await vault.reload() } }
+            BarButton(icon: "arrow.clockwise", help: "Перечитать хранилище") { Task { await vault.reload(showingProgress: true) } }
             BarButton(icon: "circle.grid.cross", help: "Вернуть вселенные на карте на места") { map.resetUniversePositions() }
             BarButton(icon: "rectangle.portrait.and.arrow.right", help: "Закрыть хранилище", destructive: true) { vault.close() }
         }
