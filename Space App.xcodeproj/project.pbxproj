@@ -251,13 +251,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Space App/Space/Space/Space-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = M42RPS3M35;
 				ENABLE_APP_SANDBOX = YES;
-				ENABLE_PREVIEWS = YES;
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Space App/Space/Space/Space-macOS.entitlements";
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Space;
@@ -294,13 +294,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Space App/Space/Space/Space-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = M42RPS3M35;
 				ENABLE_APP_SANDBOX = YES;
-				ENABLE_PREVIEWS = YES;
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Space App/Space/Space/Space-macOS.entitlements";
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Space;

@@ -100,19 +100,19 @@ struct DashboardView: View {
                                 StarRow(id: id, detail: "\(c.degree(id)) \(plural(c.degree(id), "связь", "связи", "связей"))", openNote: true)
                             }
                         }
-                        card("Связать", MapModel.Lens.suggestions.icon, MapRenderer.lensColor(.suggestions),
+                        card("Связать", MapModel.Lens.suggestions.icon, MapStyle.lensColor(.suggestions),
                              count: hints.suggestions.count, lens: .suggestions, width: 330) {
                             if hints.suggestions.isEmpty { quiet("Пока нечего предложить.") }
                             ForEach(hints.suggestions.prefix(4), id: \.self) { s in SuggestionRow(suggestion: s, openNote: true) }
                         }
-                        card("Сироты", MapModel.Lens.orphans.icon, MapRenderer.lensColor(.orphans),
+                        card("Сироты", MapModel.Lens.orphans.icon, MapStyle.lensColor(.orphans),
                              count: hints.orphans.count, lens: .orphans) {
                             if hints.orphans.isEmpty { quiet("Нет: у каждой звезды есть связь.") }
                             ForEach(hints.orphans.prefix(5), id: \.self) { id in
                                 StarRow(id: id, detail: c.constellationOf[id].flatMap { c.constellationName[$0] } ?? "", openNote: true)
                             }
                         }
-                        card("Забытые", MapModel.Lens.forgotten.icon, MapRenderer.lensColor(.forgotten),
+                        card("Забытые", MapModel.Lens.forgotten.icon, MapStyle.lensColor(.forgotten),
                              count: hints.forgotten.count, lens: .forgotten) {
                             if hints.forgotten.isEmpty { quiet("Нет: всё связанное правилось недавно.") }
                             ForEach(hints.forgotten.prefix(5), id: \.self) { id in
