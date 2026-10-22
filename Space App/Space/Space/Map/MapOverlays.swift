@@ -28,13 +28,24 @@ struct MapTopBar: View {
                     search(width: nil)
                 }
             } else {
-                HStack(spacing: 10) {
-                    backButton
-                    crumbsView.layoutPriority(1)
-                    levels
-                    Spacer(minLength: 0)
-                    lenses
-                    search(width: 220)
+                // One row when it all fits; otherwise the lenses move to a second row instead of being squeezed empty.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        backButton
+                        crumbsView.frame(minWidth: 160)
+                        levels.fixedSize()
+                        lenses.fixedSize()
+                        search(width: 200)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 10) {
+                            backButton
+                            crumbsView.frame(minWidth: 120)
+                            levels.fixedSize()
+                            search(width: 200)
+                        }
+                        lenses.fixedSize()
+                    }
                 }
             }
         }
@@ -132,6 +143,7 @@ struct MapTopBar: View {
         let hints = InsightsCache.insights(vault)
         let scope: Set<String>? = model.focusedUniverse.flatMap { atlas.group($0) }.map { Set($0.noteIDs) }
         return HStack(spacing: 6) {
+            Text("Подсветить:").font(.system(size: 12)).foregroundStyle(Theme.muted)
             ForEach(MapModel.Lens.allCases) { lens in
                 let n = count(lens, hints, in: scope)
                 let on = model.lens == lens
@@ -171,7 +183,8 @@ struct MapTopBar: View {
                 .onSubmit { if let first = results.first { fly(first) } }
         }
         .padding(.horizontal, 14)
-        .frame(maxWidth: width ?? .infinity)
+        .frame(width: width)
+        .frame(maxWidth: width == nil ? .infinity : nil)
         .frame(height: 40)
         .glassEffect(.regular.interactive(), in: .capsule)
     }
