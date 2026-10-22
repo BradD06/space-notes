@@ -44,6 +44,8 @@ final class MapModel {
     var lens: Lens?
     var hoveredStar: String?
     var hoveredGroup: String?
+    /// The universe picked with a click on the atlas: it grows, the ones it has no links with dim.
+    var pickedGroup: String?
 
     /// Picked by the user with "Папки / Теги / Кластеры"; nil lets the map choose for the vault.
     var grouping: Atlas.Grouping? = MapModel.loadGrouping() {
@@ -112,6 +114,7 @@ final class MapModel {
         }
         hoveredStar = nil
         hoveredGroup = nil
+        pickedGroup = nil
         withAnimation(.smooth(duration: 0.35)) { focus = newFocus }
     }
 
@@ -122,7 +125,7 @@ final class MapModel {
         switch focus {
         case .star(let id): go(to: atlas.groupOf[id].map(Focus.universe) ?? .multiverse)
         case .universe: go(to: .multiverse)
-        case .multiverse: break
+        case .multiverse: withAnimation(.smooth(duration: 0.4)) { pickedGroup = nil }
         }
     }
 

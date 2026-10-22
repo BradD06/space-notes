@@ -85,7 +85,7 @@ struct MapTopBar: View {
         .buttonStyle(.glass)
         .tip("Уровнем выше (Esc)")
         .keyboardShortcut(.cancelAction)
-        .disabled(model.focus == .multiverse && model.searchText.isEmpty)
+        .disabled(model.focus == .multiverse && model.searchText.isEmpty && model.pickedGroup == nil)
     }
 
     private var crumbsView: some View {

@@ -7,9 +7,9 @@ struct AtlasLevel: View {
     let atlas: Atlas
     @Environment(MapModel.self) private var model
 
-    /// The universe under the pointer grows and the others give way, so it reads at a glance.
+    /// The picked universe grows and the others give way, so it reads at a glance.
     var body: some View {
-        let focus = atlas.groups.count > 1 ? model.hoveredGroup : nil
+        let focus = atlas.groups.count > 1 ? model.pickedGroup : nil
         AtlasBoard(atlas: atlas, boost: Boost(values: AtlasLayout.focusBoost(atlas, focused: focus)))
             .animation(.smooth(duration: 0.4), value: focus)
     }
@@ -53,6 +53,8 @@ struct AtlasBoard: View, Animatable {
             let frames = Dictionary(uniqueKeysWithValues: regions.map { ($0.groupID, $0.frame) })
             let insights = InsightsCache.insights(vault)
             ZStack(alignment: .topLeading) {
+                // A click on empty space lets go of the picked universe.
+                Color.clear.contentShape(Rectangle()).onTapGesture { model.pickedGroup = nil }
                 ForEach(regions, id: \.groupID) { region in
                     if let g = atlas.group(region.groupID) { regionBox(g, region) }
                 }
@@ -60,6 +62,7 @@ struct AtlasBoard: View, Animatable {
                     for region in regions {
                         // Stars stay inside their region, however small it is.
                         ctx.drawLayer { layer in
+                            if dimmed(region.groupID) { layer.opacity = 0.25 }
                             layer.clip(to: Path(roundedRect: region.frame, cornerRadius: 22))
                             drawStars(&layer, region, insights)
                         }
@@ -67,7 +70,7 @@ struct AtlasBoard: View, Animatable {
                     drawHoverLinks(&ctx, frames)
                 }
                 .allowsHitTesting(false)
-                ForEach(regions, id: \.groupID) { region in headLabels(region) }
+                ForEach(regions, id: \.groupID) { region in headLabels(region).opacity(dimmed(region.groupID) ? 0.3 : 1) }
                 bridges(frames)
             }
         }
@@ -77,7 +80,7 @@ struct AtlasBoard: View, Animatable {
 
     private func regionBox(_ g: Atlas.Group, _ region: AtlasLayout.Region) -> some View {
         let color = MapStyle.color(g.id, atlas: atlas)
-        let hovered = model.hoveredGroup == g.id
+        let hovered = model.hoveredGroup == g.id || model.pickedGroup == g.id
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
         return ZStack(alignment: .topLeading) {
             shape.fill(color.opacity(hovered ? 0.10 : 0.05))
@@ -93,8 +96,11 @@ struct AtlasBoard: View, Animatable {
         }
         .frame(width: region.frame.width, height: region.frame.height)
         .contentShape(shape)
-        .onTapGesture { open(g) }
+        // One click picks the universe, two open it.
+        .onTapGesture(count: 2) { open(g) }
+        .onTapGesture { pick(g) }
         .onHover { inside in model.hoveredGroup = inside ? g.id : (model.hoveredGroup == g.id ? nil : model.hoveredGroup) }
+        .opacity(dimmed(g.id) ? 0.35 : 1)
         .offset(x: region.frame.minX, y: region.frame.minY)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(g.name), \(meta(g))")
@@ -102,7 +108,7 @@ struct AtlasBoard: View, Animatable {
         .accessibilityAction { open(g) }
     }
 
-    /// A constellation is a dashed box with its name and size; a tap opens the universe on it.
+    /// A constellation is a dashed box with its name and size; a double click opens the universe on it.
     @ViewBuilder
     private func constellationBox(_ c: Atlas.Constellation, _ frame: CGRect, origin: CGPoint, others: Bool) -> some View {
         let named = !c.name.isEmpty && frame.width > 70 && frame.height > 40
@@ -121,11 +127,12 @@ struct AtlasBoard: View, Animatable {
         }
         .frame(width: frame.width, height: frame.height)
         .contentShape(Rectangle())
-        .onTapGesture {
-            guard !others else { model.expandOthers = true; return }
+        .onTapGesture(count: 2) {
+            guard !others else { withAnimation(.smooth) { model.expandOthers = true }; return }
             model.go(to: .universe(c.groupID))
             model.selectedConstellation = c.id
         }
+        .onTapGesture { if let g = atlas.group(c.groupID) { pick(g) } }
         .offset(x: frame.minX - origin.x, y: frame.minY - origin.y)
     }
 
@@ -134,12 +141,22 @@ struct AtlasBoard: View, Animatable {
     }
 
     private func meta(_ g: Atlas.Group) -> String {
-        if g.isOthers { return "\(MapStyle.notes(g.count)) · нажмите, чтобы раскрыть" }
+        if g.isOthers { return "\(MapStyle.notes(g.count)) · дважды нажмите, чтобы раскрыть" }
         var parts = [MapStyle.notes(g.count)]
         let named = g.constellations.filter { $0.name != Cosmos.looseName && !$0.name.isEmpty }.count
         if named > 0 { parts.append("\(named) \(plural(named, "созвездие", "созвездия", "созвездий"))") }
         if g.modified > .distantPast { parts.append("изменено " + RuDate.relative(g.modified)) }
         return parts.joined(separator: " · ")
+    }
+
+    private func pick(_ g: Atlas.Group) {
+        model.pickedGroup = model.pickedGroup == g.id ? nil : g.id
+    }
+
+    /// While a universe is picked, the ones it has no links with step back.
+    private func dimmed(_ id: String) -> Bool {
+        guard let p = model.pickedGroup, p != id, atlas.group(p) != nil else { return false }
+        return atlas.links(between: p, and: id) == 0
     }
 
     private func open(_ g: Atlas.Group) {
@@ -186,7 +203,7 @@ struct AtlasBoard: View, Animatable {
 
     /// Hovering a universe shows where its links go, with the number on each band.
     private func drawHoverLinks(_ ctx: inout GraphicsContext, _ frames: [String: CGRect]) {
-        guard let g = model.hoveredGroup, let from = frames[g] else { return }
+        guard let g = model.pickedGroup, let from = frames[g] else { return }
         let color = MapStyle.color(g, atlas: atlas)
         for b in atlas.bridges(of: g).prefix(8) {
             guard let to = frames[b.other(than: g)], AtlasLayout.sharedBorder(from, to) == nil else { continue }
@@ -212,11 +229,14 @@ struct AtlasBoard: View, Animatable {
 
     /// One pill per pair of neighbouring universes, sitting on the border between them.
     private func bridges(_ frames: [String: CGRect]) -> some View {
+        let picked = model.pickedGroup
         let shown: [(Atlas.Bridge, CGPoint, CGPoint)] = atlas.bridges.compactMap { b in
+            // With a universe picked, only its own links are counted on the borders.
+            if let picked, b.a != picked, b.b != picked { return nil }
             guard let fa = frames[b.a], let fb = frames[b.b], let edge = AtlasLayout.sharedBorder(fa, fb) else { return nil }
             return (b, edge.0, edge.1)
         }
-        let hovered = model.hoveredGroup.map { g in atlas.bridges(of: g).prefix(8).filter { b in
+        let hovered = model.pickedGroup.map { g in atlas.bridges(of: g).prefix(8).filter { b in
             guard let fa = frames[b.a], let fb = frames[b.b] else { return false }
             return AtlasLayout.sharedBorder(fa, fb) == nil
         } } ?? []
@@ -373,7 +393,7 @@ struct AtlasPanel: View {
     private func summaryRow(_ g: Atlas.Group, biggest: Int, hints: Insights) -> some View {
         let color = MapStyle.color(g.id, atlas: atlas)
         return Button {
-            if g.isOthers { withAnimation(.smooth) { model.expandOthers = true } } else { model.go(to: .universe(g.id)) }
+            model.pickedGroup = model.pickedGroup == g.id ? nil : g.id
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
@@ -393,7 +413,9 @@ struct AtlasPanel: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { inside in model.hoveredGroup = inside ? g.id : nil }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            if g.isOthers { withAnimation(.smooth) { model.expandOthers = true } } else { model.go(to: .universe(g.id)) }
+        })
         .contextMenu {
             if atlas.colorsFollowUniverses, !g.isOthers {
                 Menu("Цвет") {
