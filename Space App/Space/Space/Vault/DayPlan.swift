@@ -27,7 +27,8 @@ nonisolated enum DayPlan {
     /// An open task this close to its time (or past it) is "going out".
     static let dyingWithin: Double = 2
 
-    private static let timePattern = try! NSRegularExpression(pattern: "(?<![\\d:.])([01]?\\d|2[0-3])[:.]([0-5]\\d)(?![\\d:])")
+    // ":" is escaped: "[:" would start a POSIX class in ICU.
+    private static let timePattern = try! NSRegularExpression(pattern: "(?<![\\d.\\:])([01]?\\d|2[0-3])[.\\:]([0-5]\\d)(?![\\d\\:])")
 
     static func stars(_ index: DVIndex, now: Date = .now) -> [DayStar] {
         let today = Tasks.startOfToday(now)
