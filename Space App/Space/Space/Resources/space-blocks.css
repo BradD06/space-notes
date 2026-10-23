@@ -1,0 +1,109 @@
+/* Space blocks — written by the Space app (Format menu → "Стили блоков для Obsidian").
+   Makes notes edited in Space look the same in Obsidian:
+     > [!toggle]- Title          a toggle (folded with "-", open with "+")
+     > [!toggle-h2]+ Title       a toggle heading (h1, h2, h3)
+     > [!space-blue]             a block in blue text
+     > [!space-blue-bg]          a block on a blue background
+     > [!multi-column]           columns, each one a nested "> > [!blank]" callout
+   Everything stays plain Markdown: without this snippet Obsidian shows ordinary callouts. */
+
+/* ---------- Toggles ---------- */
+
+.callout[data-callout^="toggle"] {
+  --callout-icon: "";
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0.2em 0;
+  mix-blend-mode: normal;
+}
+.callout[data-callout^="toggle"] > .callout-title {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 2px 0;
+  color: var(--text-normal);
+}
+.callout[data-callout^="toggle"] > .callout-title .callout-icon { display: none; }
+.callout[data-callout^="toggle"] > .callout-title .callout-title-inner { font-weight: var(--font-normal); }
+.callout[data-callout^="toggle"] .callout-fold { padding: 0 2px 0 0; color: var(--text-muted); }
+.callout[data-callout^="toggle"] > .callout-content { padding: 0 0 0 24px; }
+.callout[data-callout^="toggle"] > .callout-content > :first-child { margin-top: 0.2em; }
+
+.callout[data-callout="toggle-h1"] > .callout-title .callout-title-inner {
+  font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height);
+}
+.callout[data-callout="toggle-h2"] > .callout-title .callout-title-inner {
+  font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height);
+}
+.callout[data-callout="toggle-h3"] > .callout-title .callout-title-inner {
+  font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height);
+}
+
+/* ---------- Coloured blocks ---------- */
+
+.callout[data-callout^="space-"] {
+  --callout-icon: "";
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  padding: 0;
+  margin: 0.2em 0;
+  mix-blend-mode: normal;
+}
+.callout[data-callout^="space-"] > .callout-title { display: none; }
+.callout[data-callout^="space-"] > .callout-content { padding: 0; }
+.callout[data-callout^="space-"] > .callout-content > :first-child { margin-top: 0; }
+.callout[data-callout^="space-"] > .callout-content > :last-child { margin-bottom: 0; }
+.callout[data-callout^="space-"]:not([data-callout$="-bg"]) > .callout-content,
+.callout[data-callout^="space-"]:not([data-callout$="-bg"]) > .callout-content :is(h1, h2, h3, h4, h5, h6, li, p, strong, em) {
+  color: rgb(var(--callout-color));
+}
+.callout[data-callout^="space-"][data-callout$="-bg"] {
+  background-color: rgba(var(--callout-color), 0.16);
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+
+.callout[data-callout="space-gray"], .callout[data-callout="space-gray-bg"] { --callout-color: 155, 154, 151; }
+.callout[data-callout="space-brown"], .callout[data-callout="space-brown-bg"] { --callout-color: 186, 133, 111; }
+.callout[data-callout="space-orange"], .callout[data-callout="space-orange-bg"] { --callout-color: 229, 154, 92; }
+.callout[data-callout="space-yellow"], .callout[data-callout="space-yellow-bg"] { --callout-color: 232, 194, 90; }
+.callout[data-callout="space-green"], .callout[data-callout="space-green-bg"] { --callout-color: 111, 191, 140; }
+.callout[data-callout="space-blue"], .callout[data-callout="space-blue-bg"] { --callout-color: 111, 168, 232; }
+.callout[data-callout="space-purple"], .callout[data-callout="space-purple-bg"] { --callout-color: 175, 139, 232; }
+.callout[data-callout="space-pink"], .callout[data-callout="space-pink-bg"] { --callout-color: 224, 127, 184; }
+.callout[data-callout="space-red"], .callout[data-callout="space-red-bg"] { --callout-color: 232, 115, 107; }
+
+/* ---------- Columns ---------- */
+
+.callout[data-callout="multi-column"] {
+  --callout-icon: "";
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  mix-blend-mode: normal;
+}
+.callout[data-callout="multi-column"] > .callout-title { display: none; }
+.callout[data-callout="multi-column"] > .callout-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5em;
+  padding: 0;
+}
+.callout[data-callout="multi-column"] > .callout-content > * { flex: 1 1 0; min-width: 12em; margin: 0; }
+.callout[data-callout="multi-column"] > .callout-content > p:empty { display: none; }
+
+.callout[data-callout="blank"] {
+  --callout-icon: "";
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  mix-blend-mode: normal;
+}
+.callout[data-callout="blank"] > .callout-title { display: none; }
+.callout[data-callout="blank"] > .callout-content { padding: 0; }

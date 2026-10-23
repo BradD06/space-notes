@@ -107,12 +107,15 @@ struct MarkdownStyler {
     private static let heading = try! NSRegularExpression(pattern: "^(#{1,6})([ \\t]+)(.*)$")
     private static let fence = try! NSRegularExpression(pattern: "^[ \\t]*(```|~~~)(.*)$")
     private static let quote = try! NSRegularExpression(pattern: "^((?:>[ \\t]?)+)(.*)$")
-    private static let callout = try! NSRegularExpression(pattern: "^>[ \\t]?\\[!([A-Za-z]+)\\][+-]?[ \\t]*(.*)$")
+    private static let callout = try! NSRegularExpression(pattern: "^>[ \\t]?\\[!([A-Za-z][\\w-]*)\\][+-]?[ \\t]*(.*)$")
+    /// One level of a quote's ">" (the rest of the line is the block inside it).
+    private static let quoteMarker = try! NSRegularExpression(pattern: "^[ \\t]*>[ \\t]?")
     private static let task = try! NSRegularExpression(pattern: "^([ \\t]*)([-*+])[ \\t]+(\\[[ xX]\\])[ \\t]+")
     private static let list = try! NSRegularExpression(pattern: "^([ \\t]*)([-*+]|\\d+[.)])[ \\t]+")
     private static let rule = try! NSRegularExpression(pattern: "^[ \\t]*([-*_])(?:[ \\t]*\\1){2,}[ \\t]*$")
     // Inline
     private static let code = try! NSRegularExpression(pattern: "`([^`\\n]+)`")
+    private static let inlineMath = try! NSRegularExpression(pattern: "(?<![$\\\\])\\$(?=[^\\s$])([^$\\n]+?)(?<=[^\\s\\\\])\\$(?![$\\d])")
     private static let wikilink = try! NSRegularExpression(pattern: "(!?)\\[\\[([^\\[\\]\\n|#]+)(#[^\\[\\]\\n|]*)?(?:\\|([^\\[\\]\\n]+))?\\]\\]")
     private static let mdLink = try! NSRegularExpression(pattern: "(!?)\\[([^\\[\\]\\n]*)\\]\\(([^)\\s]+)\\)")
     private static let footnote = try! NSRegularExpression(pattern: "\\[\\^[^\\]\\s]+\\]")
@@ -197,6 +200,18 @@ struct MarkdownStyler {
                 continue
             }
 
+            // $$ formula $$ over several lines: a box like code
+            if Blocks.isMathOpen(ns.substring(with: line).trimmingCharacters(in: .whitespaces)) {
+                var j = i + 1
+                while j < lines.count, !ns.substring(with: lines[j]).trimmingCharacters(in: .whitespaces).hasSuffix("$$") { j += 1 }
+                let last = min(j, lines.count - 1)
+                let range = NSRange(location: line.location, length: NSMaxRange(lines[last]) - line.location)
+                styleCode(storage, ns: ns, lines: Array(lines[i...last]), closed: j < lines.count, lang: "", active: touches(range))
+                blocks.append(EditorBlock(kind: .code(language: "math"), range: range))
+                i = last + 1
+                continue
+            }
+
             // | table | rows: a header row followed by a |---|---| separator
             if isTableRow(ns, line), i + 1 < lines.count, Self.tableSeparator.firstMatch(in: str, range: lines[i + 1]) != nil {
                 var j = i + 2
@@ -221,6 +236,26 @@ struct MarkdownStyler {
                     let k = blocks.filter { $0.kind == .columns }.count
                     reserve(storage, ns: ns, lines: group, height: k < columnHeights.count ? columnHeights[k] : 60)
                     blocks.append(EditorBlock(kind: .columns, range: range))
+                    i = j
+                    continue
+                }
+                let header = ns.substring(with: line)
+                if let tint = Blocks.calloutHeader(header).flatMap({ BlockTint(calloutType: $0.type) }) {
+                    styleTinted(storage, ns: ns, lines: group, tint: tint, touches: touches)
+                    blocks.append(EditorBlock(kind: .tint(color: .hex(tint.color.hex), background: tint.background), range: range))
+                    i = j
+                    continue
+                }
+                // A folded callout or toggle hides its contents, unless the caret is in them.
+                let body = group.count > 1 ? NSRange(location: group[1].location, length: NSMaxRange(range) - group[1].location) : nil
+                let folded = Blocks.isFolded(header) && body.map { !touches($0) } == true
+                let fold: Bool? = Blocks.isFoldable(header) && group.count > 1 ? folded : (Blocks.isFoldable(header) ? false : nil)
+                if Blocks.kind(of: header).isToggle {
+                    styleToggle(storage, ns: ns, lines: group, level: [.toggleH1: 1, .toggleH2: 2, .toggleH3: 3][Blocks.kind(of: header)] ?? 0,
+                                folded: folded, touches: touches)
+                    var b = EditorBlock(kind: .toggle, range: range)
+                    b.fold = fold
+                    blocks.append(b)
                     i = j
                     continue
                 }
@@ -262,9 +297,26 @@ struct MarkdownStyler {
                     styleQuoteLine(storage, ns: ns, line: l, active: touches(l), calloutBody: k > 0 && kind != .quote)
                     k += 1
                 }
-                blocks.append(EditorBlock(kind: kind, range: range))
-                blocks.append(contentsOf: nested)        // drawn on top of the quote background
+                var b = EditorBlock(kind: kind, range: range)
+                b.fold = fold
+                blocks.append(b)
+                if folded {
+                    collapse(storage, ns: ns, lines: Array(group.dropFirst()))
+                } else {
+                    blocks.append(contentsOf: nested)        // drawn on top of the quote background
+                }
                 i = j
+                continue
+            }
+
+            // "^id" on a line of its own names the block above it (Obsidian): only seen while editing it.
+            if Blocks.isBlockIDLine(ns.substring(with: line)) {
+                if touches(line) {
+                    storage.addAttributes([.font: theme.font(size: theme.bodySize * 0.8, mono: true), .foregroundColor: theme.faint], range: line)
+                } else {
+                    collapse(storage, ns: ns, lines: [line])
+                }
+                i += 1
                 continue
             }
 
@@ -479,6 +531,96 @@ struct MarkdownStyler {
         return widths.map { $0 + 2 * pad }
     }
 
+    // MARK: Toggles and coloured blocks
+
+    /// Lines of a folded toggle (or a hidden "^id" line) take no room.
+    private func collapse(_ s: NSTextStorage, ns: NSString, lines: [NSRange]) {
+        let tiny = theme.font(size: 1, serif: false)
+        let p = NSMutableParagraphStyle()
+        p.minimumLineHeight = 0.01
+        p.maximumLineHeight = 0.01
+        for line in lines {
+            let para = ns.paragraphRange(for: line)
+            s.removeAttribute(.link, range: para)
+            s.addAttributes([.font: tiny, .foregroundColor: PlatformColor.clear, .backgroundColor: PlatformColor.clear,
+                             .paragraphStyle: p], range: para)
+        }
+    }
+
+    /// A line inside a toggle or a coloured block: its "> " (up to `prefixEnd` for the first line) is syntax,
+    /// the rest is styled like a line of its own (a heading, a task…), moved right by `indent`.
+    private func styleNested(_ s: NSTextStorage, ns: NSString, line: NSRange, prefixEnd: Int? = nil, active: Bool, indent: CGFloat) {
+        let para = ns.paragraphRange(for: line)
+        s.addAttribute(.paragraphStyle, value: theme.paragraph, range: para)
+        var start = line.location
+        if let prefixEnd { start = prefixEnd }
+        else if let m = Self.quoteMarker.firstMatch(in: ns as String, range: line) { start = NSMaxRange(m.range) }
+        let content = NSRange(location: start, length: NSMaxRange(line) - start)
+        styleLine(s, ns: ns, line: content, active: active)
+        hide(s, NSRange(location: line.location, length: start - line.location), active: active)
+        let at = content.length > 0 ? content.location : para.location
+        let base = (s.attribute(.paragraphStyle, at: min(at, max(s.length - 1, 0)), effectiveRange: nil) as? NSParagraphStyle) ?? theme.paragraph
+        let p = base.mutableCopy() as! NSMutableParagraphStyle
+        p.firstLineHeadIndent += indent
+        p.headIndent += indent
+        s.addAttribute(.paragraphStyle, value: p, range: para)
+    }
+
+    /// `> [!toggle]+ Title`: an arrow (drawn by the layout manager), the title, and the contents under it.
+    private func styleToggle(_ s: NSTextStorage, ns: NSString, lines: [NSRange], level: Int, folded: Bool, touches: (NSRange) -> Bool) {
+        let str = ns as String
+        let indent: CGFloat = 24
+        for (k, l) in lines.enumerated() {
+            guard k == 0 else {
+                if !folded { styleNested(s, ns: ns, line: l, active: touches(l), indent: indent) }
+                continue
+            }
+            let active = touches(l)
+            guard let m = Self.callout.firstMatch(in: str, range: l) else { continue }
+            let title = m.range(at: 2)
+            let size = level > 0 ? theme.bodySize * EditorTheme.headingScale[level - 1] : theme.bodySize
+            let p = NSMutableParagraphStyle()
+            p.firstLineHeadIndent = indent
+            p.headIndent = indent
+            p.lineSpacing = theme.bodySize * 0.3
+            p.paragraphSpacingBefore = level > 0 ? size * 0.5 : 0
+            p.paragraphSpacing = level > 0 ? size * 0.25 : theme.bodySize * 0.2
+            s.addAttributes([.paragraphStyle: p, .font: theme.font(size: size, bold: level > 0, serif: level > 2 ? false : true)],
+                            range: ns.paragraphRange(for: l))
+            hide(s, NSRange(location: l.location, length: title.location - l.location), active: active)
+            styleInline(s, ns: ns, range: title, active: active)
+        }
+        if folded { collapse(s, ns: ns, lines: Array(lines.dropFirst())) }
+    }
+
+    /// `> [!space-blue]` / `> [!space-blue-bg]`: the header line goes, the contents keep their own look
+    /// in the colour (or on a coloured background, painted by the layout manager).
+    private func styleTinted(_ s: NSTextStorage, ns: NSString, lines: [NSRange], tint: BlockTint, touches: (NSRange) -> Bool) {
+        let str = ns as String
+        let indent: CGFloat = tint.background ? 10 : 0
+        for (k, l) in lines.enumerated() {
+            guard k == 0 else {
+                styleNested(s, ns: ns, line: l, active: touches(l), indent: indent)
+                continue
+            }
+            let title = Self.callout.firstMatch(in: str, range: l)?.range(at: 2) ?? NSRange(location: NSMaxRange(l), length: 0)
+            if title.length > 0 {
+                styleNested(s, ns: ns, line: l, prefixEnd: title.location, active: touches(l), indent: indent)
+            } else if touches(l) {
+                s.addAttributes([.font: theme.font(size: theme.bodySize * 0.8, mono: true), .foregroundColor: theme.faint], range: l)
+            } else {
+                collapse(s, ns: ns, lines: [l])
+            }
+        }
+        guard !tint.background, let first = lines.first, let last = lines.last else { return }
+        let color = PlatformColor.hex(tint.color.hex)
+        let all = NSRange(location: first.location, length: NSMaxRange(last) - first.location)
+        s.enumerateAttribute(.foregroundColor, in: all) { value, r, _ in
+            guard let c = value as? PlatformColor, c == theme.ink || c == theme.quote || c == theme.accent else { return }
+            s.addAttribute(.foregroundColor, value: color, range: r)
+        }
+    }
+
     // MARK: Quotes
 
     private func styleQuoteLine(_ s: NSTextStorage, ns: NSString, line: NSRange, active: Bool, calloutBody: Bool) {
@@ -612,6 +754,13 @@ struct MarkdownStyler {
         for m in Self.code.matches(in: str, range: range) where free(m.range) {
             s.addAttributes([.font: theme.font(size: theme.bodySize, mono: true), .backgroundColor: theme.codeBackground,
                              .foregroundColor: theme.accent], range: m.range(at: 1))
+            hide(s, NSRange(location: m.range.location, length: 1), active: active)
+            hide(s, NSRange(location: NSMaxRange(m.range) - 1, length: 1), active: active)
+            protected.append(m.range)
+        }
+
+        for m in Self.inlineMath.matches(in: str, range: range) where free(m.range) {
+            s.addAttributes([.font: theme.font(size: theme.bodySize, mono: true), .foregroundColor: theme.tag], range: m.range(at: 1))
             hide(s, NSRange(location: m.range.location, length: 1), active: active)
             hide(s, NSRange(location: NSMaxRange(m.range) - 1, length: 1), active: active)
             protected.append(m.range)
@@ -886,6 +1035,10 @@ struct EditorBlock {
         case image(PlatformImage, size: CGSize)
         /// A ```dataview block: the query's results on top.
         case dataview
+        /// `> [!toggle]`: nothing painted but its arrow.
+        case toggle
+        /// `> [!space-blue]` / `> [!space-blue-bg]`: coloured text, or a coloured background.
+        case tint(color: PlatformColor, background: Bool)
     }
     var kind: Kind
     var range: NSRange
@@ -893,6 +1046,8 @@ struct EditorBlock {
     var rows: [NSRange] = []
     /// Left offset of the box, e.g. a code block inside a callout.
     var indent: CGFloat = 0
+    /// A callout that folds: true while folded (its arrow points right). Nil for everything else.
+    var fold: Bool? = nil
 }
 
 extension EditorBlock.Kind {
@@ -943,11 +1098,42 @@ final class BlockLayoutManager: NSLayoutManager {
                 fill(ctx, CGRect(x: rect.minX, y: rect.minY - 4, width: 3, height: rect.height + 8), radius: 1.5, color: color)
             case .image(let image, let size):
                 drawImage(ctx, image, size: size, line: glyphs.location, origin: origin, left: rect.minX)
-            case .columns, .properties, .gallery, .dataview:
+            case .tint(let color, let background):
+                if background { fill(ctx, rect.insetBy(dx: 0, dy: -3), radius: 8, color: color.withAlphaComponent(0.16)) }
+            case .columns, .properties, .gallery, .dataview, .toggle:
                 break
+            }
+            if let folded = block.fold, let arrow = foldArrowRect(block) {
+                drawArrow(ctx, arrow.offsetBy(dx: origin.x, dy: origin.y), folded: folded)
             }
             ctx.restoreGState()
         }
+    }
+
+    /// Where a foldable callout's arrow is, in the text container: left of a toggle's title,
+    /// at the right end of a callout's title line (as in Obsidian).
+    func foldArrowRect(_ block: EditorBlock) -> CGRect? {
+        guard block.fold != nil, let container = textContainers.first, block.range.location < (textStorage?.length ?? 0) else { return nil }
+        let glyph = glyphIndexForCharacter(at: block.range.location)
+        let used = lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        let size: CGFloat = 18
+        let pad = container.lineFragmentPadding
+        let x = block.kind == .toggle ? pad + 1 : container.size.width - pad - size - 10
+        return CGRect(x: x, y: used.maxY - min(used.height, 30) / 2 - size / 2, width: size, height: size)
+    }
+
+    private func drawArrow(_ ctx: CGContext, _ r: CGRect, folded: Bool) {
+        let c = CGPoint(x: r.midX, y: r.midY), d: CGFloat = 3.5
+        ctx.setStrokeColor(theme.muted.cgColor)
+        ctx.setLineWidth(1.8)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+        if folded {                                         // ›
+            ctx.move(to: CGPoint(x: c.x - d / 2, y: c.y - d)); ctx.addLine(to: CGPoint(x: c.x + d / 2, y: c.y)); ctx.addLine(to: CGPoint(x: c.x - d / 2, y: c.y + d))
+        } else {                                            // ⌄ (flipped view: y grows down)
+            ctx.move(to: CGPoint(x: c.x - d, y: c.y - d / 2)); ctx.addLine(to: CGPoint(x: c.x, y: c.y + d / 2)); ctx.addLine(to: CGPoint(x: c.x + d, y: c.y - d / 2))
+        }
+        ctx.strokePath()
     }
 
     private func drawTable(_ ctx: CGContext, rows: [NSRange], widths: [CGFloat], container: NSTextContainer, origin: CGPoint, left: CGFloat) {

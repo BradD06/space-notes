@@ -15,13 +15,25 @@ final class EditorState {
 
     /// The "/" menu: what's typed after the slash, the matching block kinds and the highlighted one.
     var slashQuery: String?
-    var slashItems: [BlockKind] = []
+    var slashItems: [SlashItem] = []
     var selectedSlash = 0
-    @ObservationIgnored var chooseSlash: ((BlockKind) -> Void)?
+    @ObservationIgnored var chooseSlash: ((SlashItem) -> Void)?
 
     /// Where the selected text is (top-left of its first line and its width), for the formatting bar.
     var selectionRect: CGRect?
     @ObservationIgnored var turnInto: ((BlockKind) -> Void)?
+    /// Colours the block with the caret (nil: back to the default colour).
+    @ObservationIgnored var setColor: ((BlockTint?) -> Void)?
+    /// A short note at the bottom of the editor ("Ссылка скопирована"), gone after a moment.
+    var notice: String?
+
+    func show(_ message: String) {
+        notice = message
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            if self?.notice == message { self?.notice = nil }
+        }
+    }
 
     var slashVisible: Bool { slashQuery != nil && !slashItems.isEmpty }
 
@@ -179,7 +191,7 @@ final class EditorCoordinator: NSObject {
             if state.slashQuery != nil { state.slashQuery = nil }
             return
         }
-        let items = BlockKind.allCases.filter { $0.matches(q.query) }
+        let items = SlashItem.items(matching: q.query)
         if state.slashQuery != q.query { state.selectedSlash = 0 }
         state.slashQuery = q.query
         state.slashItems = items
@@ -254,6 +266,7 @@ extension MarkdownEditor: NSViewRepresentable {
             coordinator.chooseSlash(kind, in: tv)
         }
         state.turnInto = { [weak tv] kind in tv?.turnCaretBlock(into: kind) }
+        state.setColor = { [weak tv] tint in tv?.colorCaretBlocks(tint) }
         state.insertImages = { [weak tv, weak coordinator = context.coordinator] urls in
             guard let tv, let coordinator else { return }
             coordinator.insertPictures(urls, in: tv)
@@ -317,14 +330,14 @@ extension EditorCoordinator: NSTextViewDelegate {
         parent.state.selectionRect = CGRect(x: inScroll.minX, y: top, width: inScroll.width, height: inScroll.height)
     }
 
-    func chooseSlash(_ kind: BlockKind, in tv: NSTextView) {
+    func chooseSlash(_ item: SlashItem, in tv: NSTextView) {
         let ns = tv.string as NSString
         guard let q = Self.slashQuery(in: ns, caret: tv.selectedRange().location) else { return }
-        let snippet = kind.snippet
+        let snippet = item.snippet
         replace(in: tv, range: q.range, with: snippet.text)
         tv.setSelectedRange(NSRange(location: q.range.location + snippet.caret, length: 0))
         parent.state.slashQuery = nil
-        if kind == .columns {
+        if item == .block(.columns) {
             // Straight into the first column.
             let at = q.range.location
             DispatchQueue.main.async { (tv as? SpaceTextView)?.focusColumns(at: at) }
@@ -572,6 +585,7 @@ final class SpaceTextView: NSTextView {
             trackBlockBand(from: start)
             return
         }
+        if toggleFold(at: p) { return }       // the arrow of a toggle
         super.mouseDown(with: event)
     }
 
@@ -599,8 +613,8 @@ final class SpaceTextView: NSTextView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, event.modifierFlags.contains(.command) else { return super.performKeyEquivalent(with: event) }
         let shift = event.modifierFlags.contains(.shift)
-        if let sel = blockSelection, !shift {
-            switch event.charactersIgnoringModifiers?.lowercased() {
+        if let sel = blockSelection, !shift, !event.modifierFlags.contains(.option) {
+            switch Self.latinKey(event) {
             case "d": duplicateBlocks(sel); return true
             case "c": copyBlocks(sel); return true
             case "x": copyBlocks(sel); deleteBlocks(sel); return true
@@ -608,19 +622,42 @@ final class SpaceTextView: NSTextView {
             default: break
             }
         }
-        switch (event.charactersIgnoringModifiers?.lowercased(), shift) {
+        if handleBlockHotkey(event) { return true }
+        if event.modifierFlags.contains(.option) { return super.performKeyEquivalent(with: event) }
+        switch (Self.latinKey(event), shift) {
         case ("b", false): wrapSelection("**", "**"); return true
         case ("i", false): wrapSelection("*", "*"); return true
+        case ("e", false): wrapSelection("`", "`"); return true
         case ("k", false): wrapSelection("[[", "]]"); return true
         case ("k", true): insertWebLink(); return true
         case ("h", true): wrapSelection("==", "=="); return true
-        case ("x", true): wrapSelection("~~", "~~"); return true
+        case ("x", true), ("s", true): wrapSelection("~~", "~~"); return true
+        case ("e", true): wrapSelection("$", "$"); return true
         default: return super.performKeyEquivalent(with: event)
         }
     }
 
+    /// The letter a ⌘-shortcut's key stands for, the same on a Russian layout as on an English one.
+    static func latinKey(_ event: NSEvent) -> String? {
+        let typed = event.charactersIgnoringModifiers?.lowercased()
+        if let typed, typed.unicodeScalars.allSatisfy(\.isASCII) { return typed }
+        let qwerty: [UInt16: String] = [0: "a", 11: "b", 8: "c", 2: "d", 14: "e", 3: "f", 5: "g", 4: "h", 34: "i", 38: "j",
+                                        40: "k", 37: "l", 46: "m", 45: "n", 31: "o", 35: "p", 12: "q", 15: "r", 1: "s",
+                                        17: "t", 32: "u", 9: "v", 13: "w", 7: "x", 16: "y", 6: "z", 44: "/"]
+        return qwerty[event.keyCode] ?? typed
+    }
+
     override func insertText(_ string: Any, replacementRange: NSRange) {
         super.insertText(string, replacementRange: replacementRange)
+        // Notion's Markdown shortcuts: "[] " → task, "->" → "→", ``` gets its closing fence…
+        if let typed = string as? String,
+           let edit = Blocks.typingShortcut(in: self.string, caret: selectedRange().location, typed: typed),
+           shouldChangeText(in: edit.range, replacementString: edit.replacement) {
+            textStorage?.replaceCharacters(in: edit.range, with: edit.replacement)
+            didChangeText()
+            setSelectedRange(NSRange(location: edit.caret, length: 0))
+            return
+        }
         // "[[" → "[[]]" with the caret in the middle.
         guard (string as? String) == "[" else { return }
         let ns = self.string as NSString
