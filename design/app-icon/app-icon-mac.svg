@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100"><defs>
+  <radialGradient id="b" cx="30%" cy="18%" r="95%"><stop offset="0" stop-color="#7465FF"/><stop offset=".38" stop-color="#3B2FC2"/><stop offset=".78" stop-color="#16124A"/><stop offset="1" stop-color="#0C0A28"/></radialGradient>
+  <linearGradient id="s" x1="0" y1="0" x2=".6" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".26"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>
+  <linearGradient id="i" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#CFC7FF"/></linearGradient>
+  <clipPath id="c"><rect width="100" height="100" rx="22.5"/></clipPath>
+  <filter id="e" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="1.7" result="b"/>
+    <feSpecularLighting in="b" surfaceScale="6" specularConstant="1" specularExponent="22" lighting-color="#fff" result="sp"><fePointLight x="-10" y="-30" z="70"/></feSpecularLighting>
+    <feComposite in="sp" in2="SourceAlpha" operator="in" result="sp2"/>
+    <feComposite in="SourceGraphic" in2="sp2" operator="arithmetic" k2="1" k3=".6" result="lit"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="2.4" result="sb"/><feOffset in="sb" dy="3.2" result="so"/>
+    <feFlood flood-color="#05031A" flood-opacity=".55"/><feComposite in2="so" operator="in" result="sh"/>
+    <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="gl"/><feColorMatrix in="gl" type="matrix" values="0 0 0 0 .78  0 0 0 0 .74  0 0 0 0 1  0 0 0 .55 0" result="gl2"/>
+    <feMerge><feMergeNode in="sh"/><feMergeNode in="gl2"/><feMergeNode in="lit"/></feMerge>
+  </filter>
+  <filter id="d" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1.2" stdDeviation="1.4" flood-color="#000" flood-opacity=".32"/></filter>
+</defs><g filter="url(#d)"><g transform="translate(9.77 9.77) scale(.8047)"><g clip-path="url(#c)">
+  <rect width="100" height="100" fill="url(#b)"/>
+  <g filter="url(#e)" transform="translate(14 14) scale(.72)"><line x1="68" y1="28" x2="84" y2="17" stroke="url(#i)" stroke-width="1.8" stroke-linecap="round" opacity=".38"/><circle cx="84" cy="17" r="2.4" fill="url(#i)" opacity=".55"/><line x1="32" y1="32" x2="15" y2="27" stroke="url(#i)" stroke-width="1.8" stroke-linecap="round" opacity=".38"/><circle cx="15" cy="27" r="2" fill="url(#i)" opacity=".55"/><line x1="50" y1="49.5" x2="27" y2="60" stroke="url(#i)" stroke-width="1.8" stroke-linecap="round" opacity=".38"/><circle cx="27" cy="60" r="2.2" fill="url(#i)" opacity=".55"/><line x1="68" y1="67" x2="85" y2="62" stroke="url(#i)" stroke-width="1.8" stroke-linecap="round" opacity=".38"/><circle cx="85" cy="62" r="2.4" fill="url(#i)" opacity=".55"/><line x1="31" y1="71" x2="17" y2="82" stroke="url(#i)" stroke-width="1.8" stroke-linecap="round" opacity=".38"/><circle cx="17" cy="82" r="2.6" fill="url(#i)" opacity=".55"/><polyline points="68,28 48.5,19.5 32,32 50,49.5 68,67 50.6,80.6 31,71" fill="none" stroke="url(#i)" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="68" cy="28" r="6" fill="url(#i)"/><circle cx="48.5" cy="19.5" r="4.5" fill="url(#i)"/><circle cx="32" cy="32" r="5.5" fill="url(#i)"/><circle cx="50" cy="49.5" r="8.5" fill="#FFFFFF"/><circle cx="68" cy="67" r="5.5" fill="url(#i)"/><circle cx="50.6" cy="80.6" r="4.5" fill="url(#i)"/><circle cx="31" cy="71" r="6" fill="url(#i)"/></g>
+  <rect width="100" height="100" fill="url(#s)"/>
+</g><rect x=".4" y=".4" width="99.2" height="99.2" rx="22.1" fill="none" stroke="rgba(255,255,255,.22)" stroke-width=".8"/></g></g></svg>
