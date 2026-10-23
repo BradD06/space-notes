@@ -74,15 +74,21 @@ struct SelectionBar: View {
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                 .tip("Сменить тип блока: заголовок, список, цитата…")
                 Menu {
-                    Button("По умолчанию", systemImage: "circle.slash") { state.setColor?(nil) }
+                    Button { state.setColor?(nil) } label: {
+                        Label { Text("По умолчанию") } icon: { swatchImage(nil) }
+                    }
                     Section("Текст") {
                         ForEach(BlockColor.allCases, id: \.self) { c in
-                            Button(c.title) { state.setColor?(BlockTint(c, background: false)) }
+                            Button { state.setColor?(BlockTint(c, background: false)) } label: {
+                                Label { Text(c.title) } icon: { swatchImage(c.hex) }
+                            }
                         }
                     }
                     Section("Фон") {
                         ForEach(BlockColor.allCases, id: \.self) { c in
-                            Button(c.title) { state.setColor?(BlockTint(c, background: true)) }
+                            Button { state.setColor?(BlockTint(c, background: true)) } label: {
+                                Label { Text(c.title) } icon: { swatchImage(c.hex, alpha: 0.45) }
+                            }
                         }
                     }
                 } label: {

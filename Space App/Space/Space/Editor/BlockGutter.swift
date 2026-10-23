@@ -561,7 +561,9 @@ extension SpaceTextView {
     /// Text colours, background colours and "default", each with its swatch.
     func colorMenu(current: BlockTint?, _ apply: @escaping (BlockTint?) -> Void) -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(ActionItem("По умолчанию", symbol: "circle.slash", checked: current == nil) { apply(nil) })
+        let none = ActionItem("По умолчанию", checked: current == nil) { apply(nil) }
+        none.image = swatchNSImage(nil, size: 12)
+        menu.addItem(none)
         for background in [false, true] {
             menu.addItem(.separator())
             let header = NSMenuItem(title: background ? "Фон" : "Текст", action: nil, keyEquivalent: "")
@@ -578,24 +580,9 @@ extension SpaceTextView {
         return menu
     }
 
-    /// A small "A" in the colour, or a coloured square for a background.
+    /// A circle of the colour; a background shows its lighter tint.
     static func swatch(_ c: BlockColor, background: Bool) -> NSImage {
-        NSImage(size: NSSize(width: 16, height: 16), flipped: false) { r in
-            let color = NSColor(srgbRed: CGFloat((c.hex >> 16) & 0xFF) / 255, green: CGFloat((c.hex >> 8) & 0xFF) / 255,
-                                blue: CGFloat(c.hex & 0xFF) / 255, alpha: 1)
-            let box = NSBezierPath(roundedRect: r.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
-            if background {
-                color.withAlphaComponent(0.45).setFill()
-                box.fill()
-            } else {
-                NSColor.white.withAlphaComponent(0.25).setStroke()
-                box.stroke()
-                let a = NSAttributedString(string: "A", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold), .foregroundColor: color])
-                let size = a.size()
-                a.draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2))
-            }
-            return true
-        }
+        swatchNSImage(c.hex, alpha: background ? 0.45 : 1, size: 12)
     }
 
     // MARK: Colours, toggles, links, pages
