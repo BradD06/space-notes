@@ -109,7 +109,7 @@ struct BookView: View {
             }
         }
         .animation(.smooth(duration: 0.25), value: showPanel)
-        .background(SpaceBackground())
+        .background(PaneBackdrop())
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
                 Text(toast)

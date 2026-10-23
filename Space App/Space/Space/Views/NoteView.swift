@@ -82,7 +82,7 @@ struct NoteView: View {
             }
         }
         .animation(.smooth(duration: 0.25), value: showOrbit)
-        .background(SpaceBackground())
+        .background(PaneBackdrop())
         .onAppear {
             text = file.map { (try? String(contentsOf: $0, encoding: .utf8)) ?? "" } ?? vault.text(of: noteID)
             lastSaved = text
