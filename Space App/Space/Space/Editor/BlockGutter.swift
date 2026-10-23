@@ -469,7 +469,13 @@ extension SpaceTextView {
     }
 
     func showBlockMenu(_ group: Range<Int>, from view: NSView) {
-        guard !group.isEmpty, group.lowerBound >= 0, group.upperBound <= blocks.count else { return }
+        guard let menu = blockMenu(group) else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+    }
+
+    /// The block menu: turn into, colour, links, duplicate, move, copy, delete.
+    func blockMenu(_ group: Range<Int>) -> NSMenu? {
+        guard !group.isEmpty, group.lowerBound >= 0, group.upperBound <= blocks.count else { return nil }
         let first = blocks[group.lowerBound]
         window?.makeFirstResponder(self)
         let many = group.count > 1
@@ -507,6 +513,26 @@ extension SpaceTextView {
             turnItem.submenu = turn
             menu.addItem(turnItem)
         }
+        if group.contains(where: { Blocks.canColor(string, index: $0) }) {
+            let colorItem = NSMenuItem(title: "Цвет", action: nil, keyEquivalent: "")
+            colorItem.image = NSImage(systemSymbolName: "paintpalette", accessibilityDescription: nil)
+            colorItem.submenu = colorMenu(current: many ? nil : Blocks.tint(string, index: group.lowerBound)) { [weak self] tint in
+                self?.colorBlocks(group, tint)
+            }
+            menu.addItem(colorItem)
+        }
+        if !many, first.kind != .columns {
+            let index = group.lowerBound
+            menu.addItem(.separator())
+            menu.addItem(ActionItem("Копировать ссылку на блок", symbol: "link") { [weak self] in
+                self?.copyLink(toBlock: index)
+            })
+            if coordinator?.parent.vault != nil, coordinator?.parent.noteID != nil {
+                menu.addItem(ActionItem("Превратить в страницу", symbol: "doc.badge.arrow.up") { [weak self] in
+                    self?.turnIntoPage(index)
+                })
+            }
+        }
         menu.addItem(.separator())
         menu.addItem(ActionItem("Дублировать  ⌘D", symbol: "plus.square.on.square") { [weak self] in
             self?.duplicateBlocks(group)
@@ -529,7 +555,207 @@ extension SpaceTextView {
             self?.deleteBlocks(group)
         })
         menu.autoenablesItems = false
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+        return menu
+    }
+
+    /// Text colours, background colours and "default", each with its swatch.
+    func colorMenu(current: BlockTint?, _ apply: @escaping (BlockTint?) -> Void) -> NSMenu {
+        let menu = NSMenu()
+        let none = ActionItem("По умолчанию", checked: current == nil) { apply(nil) }
+        none.image = swatchNSImage(nil, size: 12)
+        menu.addItem(none)
+        for background in [false, true] {
+            menu.addItem(.separator())
+            let header = NSMenuItem(title: background ? "Фон" : "Текст", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            for c in BlockColor.allCases {
+                let tint = BlockTint(c, background: background)
+                let item = ActionItem(c.title, checked: tint == current) { apply(tint) }
+                item.image = Self.swatch(c, background: background)
+                menu.addItem(item)
+            }
+        }
+        menu.autoenablesItems = false
+        return menu
+    }
+
+    /// A circle of the colour; a background shows its lighter tint.
+    static func swatch(_ c: BlockColor, background: Bool) -> NSImage {
+        swatchNSImage(c.hex, alpha: background ? 0.45 : 1, size: 12)
+    }
+
+    // MARK: Colours, toggles, links, pages
+
+    /// The blocks the caret (or the selected text, or the selected blocks) is in.
+    var caretGroup: Range<Int>? {
+        if let sel = blockSelection { return sel }
+        let sel = selectedRange()
+        guard let a = Blocks.index(of: sel.location, in: blocks) else { return nil }
+        let b = Blocks.index(of: NSMaxRange(sel), in: blocks) ?? a
+        return a..<(max(a, b) + 1)
+    }
+
+    func colorBlocks(_ group: Range<Int>, _ tint: BlockTint?) {
+        // Colouring keeps the number of blocks, so the selection stays valid.
+        var text = string
+        for i in group.reversed() { text = Blocks.setColor(text, index: i, tint: tint) }
+        guard text != string else { return }
+        let caret = selectedRange().location
+        let wasSelected = blockSelection != nil
+        replaceAll(with: text)
+        if wasSelected {
+            selectBlocks(from: group.lowerBound, to: group.upperBound - 1)
+        } else if let r = Blocks.range(of: group.lowerBound, in: text) {
+            setSelectedRange(NSRange(location: min(max(caret, r.location), NSMaxRange(r)), length: 0))
+        }
+    }
+
+    func colorCaretBlocks(_ tint: BlockTint?) {
+        if let g = caretGroup { colorBlocks(g, tint) }
+    }
+
+    /// A click on a toggle's arrow folds or unfolds it. True if there was an arrow there.
+    func toggleFold(at p: NSPoint) -> Bool {
+        guard let lm = layoutManager as? BlockLayoutManager else { return false }
+        let o = textContainerOrigin
+        for b in lm.blocks where b.fold != nil {
+            guard let r = lm.foldArrowRect(b)?.offsetBy(dx: o.x, dy: o.y).insetBy(dx: -4, dy: -4), r.contains(p) else { continue }
+            toggleFold(blockAt: b.range)
+            return true
+        }
+        return false
+    }
+
+    /// Flips the "+"/"-" of the callout starting at `range` (only its first line changes).
+    func toggleFold(blockAt range: NSRange) {
+        let ns = string as NSString
+        var line = ns.lineRange(for: NSRange(location: range.location, length: 0))
+        if ns.substring(with: line).hasSuffix("\n") { line.length -= 1 }
+        let header = ns.substring(with: line)
+        let folding = !Blocks.isFolded(header)
+        let new = Blocks.setFold(header, folded: folding)
+        guard new != header, shouldChangeText(in: line, replacementString: new) else { return }
+        let caret = selectedRange()
+        textStorage?.replaceCharacters(in: line, with: new)
+        didChangeText()
+        let shift = (new as NSString).length - line.length
+        let titleEnd = NSMaxRange(line) + shift
+        // Folded with the caret inside: the caret goes up to the title, or the toggle would stay open.
+        if folding, caret.location > titleEnd, caret.location <= NSMaxRange(range) + shift {
+            setSelectedRange(NSRange(location: titleEnd, length: 0))
+        } else {
+            setSelectedRange(NSRange(location: caret.location > line.location ? caret.location + shift : caret.location, length: caret.length))
+        }
+    }
+
+    /// "[[Note#^id]]" (or "[[Note#Heading]]") on the clipboard; the block gets its "^id" if it had none.
+    func copyLink(toBlock index: Int) {
+        guard let link = Blocks.blockLink(string, index: index) else { return }
+        if link.text != string {
+            let caret = selectedRange()
+            clearBlockSelection()
+            replaceAll(with: link.text)
+            setSelectedRange(NSRange(location: min(caret.location, (link.text as NSString).length), length: 0))
+        }
+        let note = coordinator?.parent.noteURL?.deletingPathExtension().lastPathComponent ?? ""
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("[[\(note)#\(link.anchor)]]", forType: .string)
+        coordinator?.parent.state.show("Ссылка на блок скопирована")
+    }
+
+    /// Moves the block into a new note next to this one and leaves "[[New note]]" in its place.
+    func turnIntoPage(_ index: Int) {
+        guard let vault = coordinator?.parent.vault, let noteID = coordinator?.parent.noteID,
+              let page = Blocks.page(from: string, index: index) else { return }
+        let folder = (noteID as NSString).deletingLastPathComponent
+        do {
+            let id = try vault.createNote(titled: page.title, inFolder: folder, text: page.body + "\n")
+            let title = ((id as NSString).lastPathComponent as NSString).deletingPathExtension
+            let new = Blocks.replace(string, index: index, with: "[[\(title)]]")
+            clearBlockSelection()
+            replaceAll(with: new)
+            if let r = Blocks.range(of: index, in: new) { setSelectedRange(NSRange(location: NSMaxRange(r), length: 0)) }
+            coordinator?.parent.state.show("Страница «\(title)» создана")
+            Task { await vault.reload() }
+        } catch {
+            vault.errorMessage = "Не удалось создать страницу: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Block shortcuts
+
+    /// ⌘⌥0…8 turn into, ⌘D duplicate, ⌘↩ ticks a task or folds a toggle, ⌘⌥T folds all toggles,
+    /// ⌘/ opens the block menu. True if the key was one of them.
+    func handleBlockHotkey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command), !flags.contains(.control) else { return false }
+        let option = flags.contains(.option), shift = flags.contains(.shift)
+        if option, !shift {
+            // Physical keys, so they work on any layout.
+            let kinds: [UInt16: BlockKind] = [29: .text, 18: .h1, 19: .h2, 20: .h3, 21: .task, 23: .bullet, 22: .numbered, 26: .toggle, 28: .code]
+            if let kind = kinds[event.keyCode], let g = caretGroup {
+                let sel = blockSelection
+                if g.count == 1 && sel == nil { turnBlock(g.lowerBound, into: kind) } else { turnBlocks(g, into: kind) }
+                return true
+            }
+            if event.keyCode == 17 {                                        // ⌘⌥T
+                let new = Blocks.toggleAllFolds(string)
+                guard new != string else { return true }
+                let caret = selectedRange()
+                clearBlockSelection()
+                replaceAll(with: new)
+                setSelectedRange(NSRange(location: min(caret.location, (new as NSString).length), length: 0))
+                return true
+            }
+            return false
+        }
+        if option || shift { return false }
+        switch event.keyCode {
+        case 2 where blockSelection == nil:                                 // ⌘D
+            guard let g = caretGroup else { return true }
+            let offset = selectedRange().location - blocks[g.lowerBound].range.location
+            let new = Blocks.duplicate(string, range: g)
+            guard new != string else { return true }
+            replaceAll(with: new)
+            if let r = Blocks.range(of: g.upperBound, in: new) {            // the caret goes into the copy
+                setSelectedRange(NSRange(location: r.location + min(max(offset, 0), r.length), length: 0))
+            }
+            return true
+        case 36, 76:                                                        // ⌘↩
+            guard let i = Blocks.index(of: selectedRange().location, in: blocks) else { return false }
+            let ns = string as NSString
+            var line = ns.lineRange(for: NSRange(location: selectedRange().location, length: 0))
+            if ns.substring(with: line).hasSuffix("\n") { line.length -= 1 }
+            let text = ns.substring(with: line)
+            // A task, also inside a toggle or a coloured block ("> - [ ] …"): ticked like a click on its box.
+            if let box = text.range(of: #"^[ \t>]*[-*+][ \t]+\[[ xX]\]"#, options: .regularExpression) {
+                let quoted = text.trimmingCharacters(in: .whitespaces).hasPrefix(">")
+                let mark = text.index(box.upperBound, offsetBy: -2)
+                let new = quoted ? text.replacingCharacters(in: mark..<text.index(after: mark), with: text[mark] == " " ? "x" : " ")
+                                 : Tasks.toggled(text)
+                let caret = selectedRange()
+                if shouldChangeText(in: line, replacementString: new) {
+                    textStorage?.replaceCharacters(in: line, with: new)
+                    didChangeText()
+                    setSelectedRange(NSRange(location: min(caret.location, line.location + (new as NSString).length), length: 0))
+                }
+                return true
+            }
+            if Blocks.isFoldable(ns.substring(with: ns.lineRange(for: NSRange(location: blocks[i].range.location, length: 0)))) {
+                toggleFold(blockAt: blocks[i].range)
+                return true
+            }
+            return false
+        case 44:                                                            // ⌘/
+            guard let g = caretGroup, let menu = blockMenu(g) else { return true }
+            if blockSelection == nil { selectBlocks(from: g.lowerBound, to: g.upperBound - 1) }
+            let r = rect(of: g)
+            menu.popUp(positioning: nil, at: NSPoint(x: r.minX, y: r.minY - 4), in: self)
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: Selected blocks

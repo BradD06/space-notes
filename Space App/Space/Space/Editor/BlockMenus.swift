@@ -8,31 +8,41 @@ struct SlashMenu: View {
 
     var body: some View {
         if state.slashVisible {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Блоки")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.muted)
-                    .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
-                ForEach(Array(state.slashItems.enumerated()), id: \.offset) { index, kind in
-                    Button { state.chooseSlash?(kind) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: kind.icon)
-                                .font(.system(size: 12))
-                                .frame(width: 26, height: 26)
-                                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            Text(kind.title).lineLimit(1)
-                            Spacer(minLength: 0)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Блоки")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
+                        ForEach(Array(state.slashItems.enumerated()), id: \.offset) { index, item in
+                            Button { state.chooseSlash?(item) } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: item.icon)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(item.swatch.map { Color(blockColor: $0) } ?? Theme.ink)
+                                        .frame(width: 26, height: 26)
+                                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                    Text(item.title).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(index == state.selectedSlash ? Theme.accent.opacity(0.18) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .id(index)
                         }
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(index == state.selectedSlash ? Theme.accent.opacity(0.18) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .padding(6)
                 }
+                .scrollIndicators(.never)
+                .frame(maxHeight: 380)
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: state.selectedSlash) { _, i in proxy.scrollTo(i) }
             }
-            .padding(6)
-            .frame(width: 250)
+            .frame(width: 260)
             .glassEffect(.regular, in: .rect(cornerRadius: 16))
             .offset(x: state.caretPoint.x, y: state.caretPoint.y)
             .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
@@ -63,12 +73,37 @@ struct SelectionBar: View {
                 }
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                 .tip("Сменить тип блока: заголовок, список, цитата…")
+                Menu {
+                    Button { state.setColor?(nil) } label: {
+                        Label { Text("По умолчанию") } icon: { swatchImage(nil) }
+                    }
+                    Section("Текст") {
+                        ForEach(BlockColor.allCases, id: \.self) { c in
+                            Button { state.setColor?(BlockTint(c, background: false)) } label: {
+                                Label { Text(c.title) } icon: { swatchImage(c.hex) }
+                            }
+                        }
+                    }
+                    Section("Фон") {
+                        ForEach(BlockColor.allCases, id: \.self) { c in
+                            Button { state.setColor?(BlockTint(c, background: true)) } label: {
+                                Label { Text(c.title) } icon: { swatchImage(c.hex, alpha: 0.45) }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "paintpalette").font(.system(size: 12, weight: .medium))
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                }
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .tip("Цвет блока")
                 divider
                 item("bold", "Жирный ⌘B") { state.insertMarkup?("**", "**") }
                 item("italic", "Курсив ⌘I") { state.insertMarkup?("*", "*") }
-                item("strikethrough", "Зачёркнутый ⌘⇧X") { state.insertMarkup?("~~", "~~") }
-                item("chevron.left.forwardslash.chevron.right", "Код") { state.insertMarkup?("`", "`") }
+                item("strikethrough", "Зачёркнутый ⌘⇧S") { state.insertMarkup?("~~", "~~") }
+                item("chevron.left.forwardslash.chevron.right", "Код ⌘E") { state.insertMarkup?("`", "`") }
                 item("highlighter", "Выделение ⌘⇧H") { state.insertMarkup?("==", "==") }
+                item("function", "Формула ⌘⇧E") { state.insertMarkup?("$", "$") }
                 divider
                 item("link", "Ссылка на звезду ⌘K") { state.insertMarkup?("[[", "]]") }
             }
@@ -94,5 +129,30 @@ struct SelectionBar: View {
         }
         .buttonStyle(.plain)
         .tip(help)
+    }
+}
+
+// MARK: - Short notices
+
+/// "Ссылка скопирована" and the like, at the bottom of the editor for a moment.
+struct EditorNotice: View {
+    let state: EditorState
+
+    var body: some View {
+        if let text = state.notice {
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.bottom, 18)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+    }
+}
+
+extension Color {
+    init(blockColor c: BlockColor) {
+        self.init(.sRGB, red: Double((c.hex >> 16) & 0xFF) / 255, green: Double((c.hex >> 8) & 0xFF) / 255,
+                  blue: Double(c.hex & 0xFF) / 255)
     }
 }

@@ -419,7 +419,11 @@ struct AtlasPanel: View {
         .contextMenu {
             if atlas.colorsFollowUniverses, !g.isOthers {
                 Menu("Цвет") {
-                    ForEach(UniverseColors.swatches) { s in Button(s.name) { UniverseColors.shared.set(s.hex, for: g.id) } }
+                    ForEach(UniverseColors.swatches) { s in
+                        Button { UniverseColors.shared.set(s.hex, for: g.id) } label: {
+                            Label { Text(s.name) } icon: { swatchImage(s.hex) }
+                        }
+                    }
                 }
             }
         }

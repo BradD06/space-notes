@@ -966,27 +966,46 @@ struct CreateSheet: View {
 }
 
 /// A coloured circle for menus. Menus draw SF Symbols in one colour, so this is a real (non-template) image.
+/// `alpha` < 1 shows a background tint; a nil `hex` is an empty ring ("по умолчанию").
 @MainActor
-func swatchImage(_ hex: UInt32) -> Image {
-    let size: CGFloat = 14
+func swatchImage(_ hex: UInt32?, alpha: CGFloat = 1) -> Image {
     #if os(macOS)
-    let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-        NSColor(Color(hex: hex)).setFill()
-        NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
-        NSColor.white.withAlphaComponent(0.25).setStroke()
-        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)); ring.lineWidth = 1; ring.stroke()
-        return true
-    }
-    img.isTemplate = false
-    return Image(nsImage: img)
+    return Image(nsImage: swatchNSImage(hex, alpha: alpha))
     #else
+    let size: CGFloat = 14
     let img = UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
-        UIColor(Color(hex: hex)).setFill()
-        UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2)).fill()
+        let oval = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2))
+        if let hex {
+            UIColor(Color(hex: hex)).withAlphaComponent(alpha).setFill()
+            oval.fill()
+        }
+        UIColor.white.withAlphaComponent(hex == nil ? 0.6 : 0.25).setStroke()
+        oval.lineWidth = 1
+        oval.stroke()
     }.withRenderingMode(.alwaysOriginal)
     return Image(uiImage: img)
     #endif
 }
+
+#if os(macOS)
+/// The same circle for AppKit menus.
+@MainActor
+func swatchNSImage(_ hex: UInt32?, alpha: CGFloat = 1, size: CGFloat = 14) -> NSImage {
+    let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+        let oval = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
+        if let hex {
+            NSColor(Color(hex: hex)).withAlphaComponent(alpha).setFill()
+            oval.fill()
+        }
+        NSColor.white.withAlphaComponent(hex == nil ? 0.6 : 0.25).setStroke()
+        oval.lineWidth = 1
+        oval.stroke()
+        return true
+    }
+    img.isTemplate = false
+    return img
+}
+#endif
 
 /// What the "delete" confirmation is about.
 private struct DeleteTarget {

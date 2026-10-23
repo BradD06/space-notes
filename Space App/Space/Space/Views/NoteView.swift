@@ -61,6 +61,8 @@ struct NoteView: View {
                 .overlay(alignment: .topLeading) { LinkSuggestions(state: editor) }
                 .overlay(alignment: .topLeading) { SlashMenu(state: editor) }
                 .overlay(alignment: .topLeading) { SelectionBar(state: editor) }
+                .overlay(alignment: .bottom) { EditorNotice(state: editor) }
+                .animation(.easeOut(duration: 0.15), value: editor.notice)
                 .animation(.easeOut(duration: 0.12), value: editor.linkQuery == nil)
                 .animation(.easeOut(duration: 0.12), value: editor.slashVisible)
                 .animation(.easeOut(duration: 0.1), value: editor.selectionRect == nil)
@@ -148,9 +150,10 @@ struct NoteView: View {
             Menu {
                 Button("Жирный  ⌘B", systemImage: "bold") { editor.insertMarkup?("**", "**") }
                 Button("Курсив  ⌘I", systemImage: "italic") { editor.insertMarkup?("*", "*") }
-                Button("Зачёркнутый  ⌘⇧X", systemImage: "strikethrough") { editor.insertMarkup?("~~", "~~") }
+                Button("Зачёркнутый  ⌘⇧S", systemImage: "strikethrough") { editor.insertMarkup?("~~", "~~") }
                 Button("Выделение  ⌘⇧H", systemImage: "highlighter") { editor.insertMarkup?("==", "==") }
-                Button("Код", systemImage: "chevron.left.forwardslash.chevron.right") { editor.insertMarkup?("`", "`") }
+                Button("Код  ⌘E", systemImage: "chevron.left.forwardslash.chevron.right") { editor.insertMarkup?("`", "`") }
+                Button("Формула  ⌘⇧E", systemImage: "function") { editor.insertMarkup?("$", "$") }
                 Divider()
                 Button("Ссылка на звезду  ⌘K", systemImage: "link") { editor.insertMarkup?("[[", "]]") }
                 Button("Ссылка на сайт  ⌘⇧K", systemImage: "globe") { editor.insertWebLink?() }
@@ -158,6 +161,11 @@ struct NoteView: View {
                 Button("Задача", systemImage: "checkmark.square") { editor.insertMarkup?("- [ ] ", "") }
                 Button("Цитата", systemImage: "text.quote") { editor.insertMarkup?("> ", "") }
                 Button("Выноска", systemImage: "exclamationmark.bubble") { editor.insertMarkup?("> [!note] ", "") }
+                Button("Раскрывающийся список", systemImage: "chevron.right.circle") { editor.insertMarkup?("> [!toggle]+ ", "") }
+                if file == nil {
+                    Divider()
+                    Button("Стили блоков для Obsidian", systemImage: "paintbrush") { installObsidianStyles() }
+                }
             } label: {
                 Image(systemName: "textformat").frame(width: 26, height: 24)
             }
@@ -184,6 +192,17 @@ struct NoteView: View {
             }
         }
         .foregroundStyle(Theme.muted)
+    }
+
+    /// Writes `space-blocks.css` into the vault's `.obsidian/snippets` and turns it on, so toggles,
+    /// coloured blocks and columns look in Obsidian the way they do here.
+    private func installObsidianStyles() {
+        do {
+            try vault.installObsidianSnippet(named: ObsidianSnippet.name, css: ObsidianSnippet.css())
+            editor.show("Стили установлены: .obsidian/snippets/\(ObsidianSnippet.name).css")
+        } catch {
+            vault.errorMessage = "Не удалось записать стили для Obsidian: \(error.localizedDescription)"
+        }
     }
 
     private func tool(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {

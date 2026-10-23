@@ -466,6 +466,32 @@ final class VaultStore {
         return folder.isEmpty ? fileName : folder + "/" + fileName
     }
 
+    // MARK: Obsidian
+
+    /// Saves a CSS snippet in the vault's `.obsidian/snippets` and lists it in `appearance.json` as turned on
+    /// (other settings there are kept; a file that can't be read is left alone).
+    func installObsidianSnippet(named name: String, css: String) throws {
+        guard let root = rootURL else { throw CreateError.noVault }
+        let obsidian = root.appending(path: ".obsidian", directoryHint: .isDirectory)
+        let snippets = obsidian.appending(path: "snippets", directoryHint: .isDirectory)
+        try writing {
+            try FileManager.default.createDirectory(at: snippets, withIntermediateDirectories: true)
+            try css.write(to: snippets.appending(path: name + ".css"), atomically: true, encoding: .utf8)
+            let appearance = obsidian.appending(path: "appearance.json")
+            var settings: [String: Any] = [:]
+            if let data = try? Data(contentsOf: appearance) {
+                guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                settings = parsed
+            }
+            var enabled = settings["enabledCssSnippets"] as? [String] ?? []
+            guard !enabled.contains(name) else { return }
+            enabled.append(name)
+            settings["enabledCssSnippets"] = enabled
+            let out = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+            try out.write(to: appearance, options: .atomic)
+        }
+    }
+
     // MARK: Moving
 
     /// Moves a note, book or folder into another folder of the vault ("" = the root). Returns its new path,

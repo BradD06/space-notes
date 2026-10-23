@@ -8,6 +8,11 @@ import Foundation
 /// the gaps where they were, so the spacing of the note doesn't change.
 nonisolated enum BlockKind: String, CaseIterable, Sendable {
     case text, h1, h2, h3, bullet, numbered, task, quote, callout, code, table, columns, gallery, divider
+    /// Notion's toggles, stored as foldable callouts: `> [!toggle]-` (folded) / `> [!toggle]+` (open);
+    /// a toggle heading is `> [!toggle-h2]+ Title`.
+    case toggle, toggleH1, toggleH2, toggleH3
+    /// Only inserted: a `$$` formula, a ```mermaid diagram, a `[[link]]` to a page.
+    case equation, mermaid, pageLink
 
     var title: String {
         switch self {
@@ -25,6 +30,13 @@ nonisolated enum BlockKind: String, CaseIterable, Sendable {
         case .columns: "Колонки"
         case .gallery: "Галерея"
         case .divider: "Разделитель"
+        case .toggle: "Раскрывающийся список"
+        case .toggleH1: "Раскрывающийся заголовок 1"
+        case .toggleH2: "Раскрывающийся заголовок 2"
+        case .toggleH3: "Раскрывающийся заголовок 3"
+        case .equation: "Формула"
+        case .mermaid: "Диаграмма Mermaid"
+        case .pageLink: "Ссылка на страницу"
         }
     }
 
@@ -44,6 +56,11 @@ nonisolated enum BlockKind: String, CaseIterable, Sendable {
         case .columns: "rectangle.split.2x1"
         case .gallery: "square.grid.2x2"
         case .divider: "minus"
+        case .toggle: "chevron.right.circle"
+        case .toggleH1, .toggleH2, .toggleH3: "chevron.right.square"
+        case .equation: "function"
+        case .mermaid: "flowchart"
+        case .pageLink: "arrow.up.right.square"
         }
     }
 
@@ -64,16 +81,28 @@ nonisolated enum BlockKind: String, CaseIterable, Sendable {
         case .columns: ["columns", "колонки", "столбцы", "layout"]
         case .gallery: ["gallery", "галерея", "библиотека", "library", "cards", "карточки", "books", "книги", "database", "база"]
         case .divider: ["divider", "line", "hr", "разделитель", "линия"]
+        case .toggle: ["toggle", "fold", "details", "раскрывающийся", "сворачиваемый", "спойлер", "переключатель"]
+        case .toggleH1: ["toggle", "h1", "heading", "раскрывающийся", "заголовок"]
+        case .toggleH2: ["toggle", "h2", "heading", "раскрывающийся", "заголовок"]
+        case .toggleH3: ["toggle", "h3", "heading", "раскрывающийся", "заголовок"]
+        case .equation: ["equation", "math", "latex", "tex", "формула", "математика", "уравнение"]
+        case .mermaid: ["mermaid", "diagram", "flowchart", "диаграмма", "схема"]
+        case .pageLink: ["link", "page", "wiki", "ссылка", "страница"]
         }
     }
 
     /// Kinds a block can be turned into (tables and dividers are only inserted).
-    static let convertible: [BlockKind] = [.text, .h1, .h2, .h3, .bullet, .numbered, .task, .quote, .callout, .code]
+    static let convertible: [BlockKind] = [.text, .h1, .h2, .h3, .bullet, .numbered, .task, .toggle, .toggleH1, .toggleH2, .toggleH3,
+                                           .quote, .callout, .code]
+
+    var isToggle: Bool { [.toggle, .toggleH1, .toggleH2, .toggleH3].contains(self) }
+    /// Kept in "> " lines: every line of the block carries the marker.
+    var isQuoted: Bool { self == .quote || self == .callout || isToggle }
 
     /// The Markdown a single line of this kind starts with.
     var linePrefix: String {
         switch self {
-        case .text, .code, .table, .columns, .gallery, .divider: ""
+        case .text, .code, .table, .columns, .gallery, .divider, .equation, .mermaid, .pageLink: ""
         case .h1: "# "
         case .h2: "## "
         case .h3: "### "
@@ -82,6 +111,10 @@ nonisolated enum BlockKind: String, CaseIterable, Sendable {
         case .task: "- [ ] "
         case .quote: "> "
         case .callout: "> [!note] "
+        case .toggle: "> [!toggle]+ "
+        case .toggleH1: "> [!toggle-h1]+ "
+        case .toggleH2: "> [!toggle-h2]+ "
+        case .toggleH3: "> [!toggle-h3]+ "
         }
     }
 
@@ -91,6 +124,9 @@ nonisolated enum BlockKind: String, CaseIterable, Sendable {
         case .code: ("```\n\n```", 4)
         case .table: ("| Колонка | Колонка |\n| --- | --- |\n|  |  |", 2)
         case .divider: ("---\n", 4)
+        case .equation: ("$$\n\n$$", 3)
+        case .mermaid: ("```mermaid\n\n```", 11)
+        case .pageLink: ("[[]]", 2)
         case .columns: (Blocks.columnsMarkdown(["", ""]).joined(separator: "\n") + "\n", 0)
         case .gallery: (GallerySpec().markdown + "\n", (GallerySpec().markdown as NSString).length + 1)
         default: (linePrefix, (linePrefix as NSString).length)
@@ -148,6 +184,10 @@ nonisolated enum Blocks {
                 var j = i + 1
                 while j < lines.count, !lines[j].trimmingCharacters(in: .whitespaces).hasPrefix(fence) { j += 1 }
                 end = min(j, lines.count - 1)
+            } else if isMathOpen(t) {
+                var j = i + 1
+                while j < lines.count, !lines[j].trimmingCharacters(in: .whitespaces).hasSuffix("$$") { j += 1 }
+                end = min(j, lines.count - 1)
             } else if t.hasPrefix("|") {
                 while end + 1 < lines.count, lines[end + 1].trimmingCharacters(in: .whitespaces).hasPrefix("|") { end += 1 }
             } else if t.hasPrefix(">") {
@@ -175,6 +215,7 @@ nonisolated enum Blocks {
         let t = line.trimmingCharacters(in: .whitespaces)
         if t.hasPrefix("```") || t.hasPrefix("~~~") { return .code }
         if t.hasPrefix("|") { return .table }
+        if t.hasPrefix("$$") { return .equation }
         if t == "---" || t == "***" || t == "___" { return .divider }
         if t.hasPrefix("### ") { return .h3 }
         if t.hasPrefix("## ") { return .h2 }
@@ -183,9 +224,22 @@ nonisolated enum Blocks {
         if t.range(of: #"^[-*+]\s+"#, options: .regularExpression) != nil { return .bullet }
         if t.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) != nil { return .numbered }
         if isColumnsHeader(t) { return .columns }
+        if let m = t.range(of: #"^>\s?\[!toggle(-h[1-3])?\]"#, options: [.regularExpression, .caseInsensitive]) {
+            switch t[m].lowercased().suffix(3) {
+            case "h1]": return .toggleH1
+            case "h2]": return .toggleH2
+            case "h3]": return .toggleH3
+            default: return .toggle
+            }
+        }
         if t.range(of: #"^>\s?\[!"#, options: .regularExpression) != nil { return .callout }
         if t.hasPrefix(">") { return .quote }
         return .text
+    }
+
+    /// A line opening a `$$` formula that goes on below it (not a one-line `$$x$$`).
+    static func isMathOpen(_ trimmed: String) -> Bool {
+        trimmed.hasPrefix("$$") && !(trimmed.count >= 4 && trimmed.hasSuffix("$$"))
     }
 
     private static func isListItem(_ trimmed: String) -> Bool {
@@ -312,8 +366,26 @@ nonisolated enum Blocks {
         let all = blocks(in: text)
         guard all.indices.contains(index) else { return text }
         let b = all[index]
-        guard b.kind != .columns, kind != .columns else { return text }
+        guard b.kind != .columns, b.kind != .equation, kind != .columns else { return text }
         var body = Array(lines[b.lines])
+
+        // A coloured block: its contents change kind and keep the colour. Turned into plain text it loses
+        // the colour; into a quote, callout or toggle the colour goes (callouts can't be coloured twice).
+        if let tint = tint(of: body) {
+            let inner = unwrapQuote(body)
+            let innerText = inner.joined(separator: "\n")
+            let plain = Blocks.blocks(in: innerText).first?.kind ?? .text
+            let out: [String]
+            if kind == .text && plain == .text {
+                out = inner
+            } else if kind.isQuoted {
+                out = Self.lines(turn(innerText, index: 0, into: kind))
+            } else {
+                out = wrap(Self.lines(turn(innerText, index: 0, into: kind)), in: tint)
+            }
+            lines.replaceSubrange(b.lines, with: out)
+            return lines.joined(separator: "\n")
+        }
 
         // Out of a code block: drop the fences.
         if b.kind == .code {
@@ -327,12 +399,12 @@ nonisolated enum Blocks {
         switch kind {
         case .code:
             body = ["```"] + body.map { strip($0).content } + ["```"]
-        case .quote, .callout:
+        case .quote, .callout, .toggle, .toggleH1, .toggleH2, .toggleH3:
             // Every line of a quote carries the marker; a callout keeps its type line first.
             let words = body.map { strip($0).content }
             body = words.enumerated().map { i, w in (i == 0 ? kind.linePrefix : "> ") + w }
         default:
-            if b.kind == .quote || b.kind == .callout {
+            if b.kind.isQuoted {
                 // Out of a quote: every line loses its marker, the first gets the new one.
                 body = body.enumerated().map { i, l in
                     let s = strip(l)
