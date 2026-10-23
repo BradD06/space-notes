@@ -15,26 +15,19 @@ struct SidebarView: View {
     @State private var creatingVault = false
     @State private var openingVault = false
     @State private var deleting: DeleteTarget?
-    @State private var search = ""
     @State private var pickingCover = false
     @State private var foldHover = false
-    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             brandRow
             vaultCard
             GlowDivider()
-            searchField                          // in the folded rail: a magnifier that unfolds the panel
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    if !search.isEmpty && !compact {
-                        SectionLabel(title: "Найдено", compact: compact)
-                        searchResults
-                    } else {
-                        universesHeader
-                        tree
-                    }
+                    pinned
+                    universesHeader
+                    tree
                 }
                 .padding(.vertical, 6)
             }
@@ -186,56 +179,26 @@ struct SidebarView: View {
         .tip("Дашборд хранилища")
     }
 
-    /// Search field: filters the stars by name. In the folded rail it is a magnifier that unfolds the panel.
-    private var searchField: some View {
-        Group {
-            if compact {
-                IconButton(icon: "magnifyingglass", help: "Поиск") {
-                    compact = false
-                    Task { @MainActor in try? await Task.sleep(for: .milliseconds(350)); searchFocused = true }
-                }
-            } else {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.muted)
-                    TextField("", text: $search, prompt: Text("Поиск…").foregroundStyle(Theme.muted))
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(Theme.ink)
-                        .focused($searchFocused)
-                    if !search.isEmpty {
-                        Button { search = "" } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted)
-                        }
-                        .buttonStyle(.plain)
-                        .tip("Очистить поиск")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 38)
-                .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.wash.opacity(0.07)))
-                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(searchFocused ? Theme.accentText : Theme.line, lineWidth: 1))
-                // Focus: a soft ring of the accent around the field.
-                .background(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(Theme.accentGlow, lineWidth: searchFocused ? 3 : 0).padding(-1.5))
-                .animation(.smooth(duration: 0.15), value: searchFocused)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, compact ? 0 : 14)
-        .padding(.top, 12)
-        .padding(.bottom, 4)
-    }
-
-    private var searchResults: some View {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+    /// "Закреплённые": notes pinned from their context menu, always at hand above the universes.
+    @ViewBuilder
+    private var pinned: some View {
         let cosmos = vault.cosmos
-        let found = Self.byName(cosmos.notes.keys.filter { cosmos.title($0).lowercased().contains(q) })
-        return VStack(alignment: .leading, spacing: 2) {
-            ForEach(found.prefix(80), id: \.self) { id in
-                starRow(id, level: 0, color: Theme.color(forUniverse: cosmos.universeOf[id]))
-            }
-            if found.isEmpty {
-                Text("Ничего не нашлось").font(.callout).foregroundStyle(Theme.muted).padding(.horizontal, 18).padding(.vertical, 8)
+        let ids = Pins.shared.ids.filter { cosmos.notes[$0] != nil }
+        if !ids.isEmpty {
+            SectionLabel(title: "Закреплённые", compact: compact)
+            ForEach(ids, id: \.self) { id in
+                if compact {
+                    Button { vault.selection = .note(id) } label: {
+                        Image(systemName: "pin.fill").font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(vault.selection == .note(id) ? Theme.accentText : Theme.muted)
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .tip(cosmos.title(id))
+                } else {
+                    starRow(id, level: 0, color: Theme.color(forUniverse: cosmos.universeOf[id]), pinIcon: true)
+                }
             }
         }
     }
@@ -320,15 +283,16 @@ struct SidebarView: View {
 
     private var tree: some View {
         let cosmos = vault.cosmos
+        let progress = DayPlan.progress(DataviewIndexCache.shared.index(vault), cosmos: cosmos)
         return VStack(alignment: .leading, spacing: 1) {
             ForEach(cosmos.universes) { universe in
                 if compact {
-                    CompactUniverse(universe: universe) {
+                    CompactUniverse(universe: universe, progress: progress[universe.id]) {
                         vault.selection = .map
                         map.go(to: .universe(universe.id))
                     }
                 } else {
-                    universeTree(universe)
+                    universeTree(universe, progress: progress[universe.id])
                 }
             }
             if cosmos.universes.isEmpty, !compact {
@@ -338,13 +302,13 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func universeTree(_ universe: Cosmos.Universe) -> some View {
+    private func universeTree(_ universe: Cosmos.Universe, progress: (done: Int, total: Int)?) -> some View {
         let cosmos = vault.cosmos
         let open = isExpanded(universe.id)
         let color = Theme.color(forUniverse: universe.id)
         TreeRow(level: 0, expandable: true, expanded: open, selected: false, count: universe.starCount,
                 onToggle: { toggle(universe.id) }, onTap: { toggle(universe.id) }) {
-            UniverseDot(universe: universe)
+            UniverseDot(universe: universe, progress: progress)
             Text(universe.name).fontWeight(.medium).lineLimit(1)
         }
         .modifier(FolderRowDrag(path: vault.folderName(ofUniverse: universe.id),
@@ -419,11 +383,13 @@ struct SidebarView: View {
         }
     }
 
-    private func starRow(_ id: String, level: Int, color: Color) -> some View {
+    private func starRow(_ id: String, level: Int, color: Color, pinIcon: Bool = false) -> some View {
         let selected = vault.selection == .note(id)
         return TreeRow(level: level, expandable: false, expanded: false, selected: selected, tint: color,
                        count: nil, onToggle: {}, onTap: { vault.selection = .note(id) }) {
-            if Books.isBook(id) {
+            if pinIcon {
+                Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(selected ? Color.white : Theme.accentText)
+            } else if Books.isBook(id) {
                 Image(systemName: "book.closed.fill").font(.system(size: 10)).foregroundStyle(selected ? Color.white : Theme.muted)
             } else if Documents.isDocument(id) {
                 Image(systemName: Documents.icon(for: id)).font(.system(size: 10)).foregroundStyle(selected ? Color.white : Theme.muted)
@@ -454,6 +420,10 @@ struct SidebarView: View {
             Button("Открыть справа", systemImage: "rectangle.split.2x1") { workspace.openToTheSide(.note(id)) }
             Button("Открыть в правой панели", systemImage: "sidebar.right") { workspace.moveToDock(.right, tab: .note(id)) }
             Button("Открыть в левой панели, под папками", systemImage: "sidebar.left") { workspace.moveToDock(.left, tab: .note(id)) }
+            Divider()
+            Button(Pins.shared.contains(id) ? "Открепить" : "Закрепить наверху", systemImage: Pins.shared.contains(id) ? "pin.slash" : "pin") {
+                withAnimation(.smooth(duration: 0.25)) { Pins.shared.toggle(id) }
+            }
             Divider()
             Button("Удалить звезду…", systemImage: "trash", role: .destructive) {
                 deleting = DeleteTarget(kind: .star, name: vault.cosmos.title(id), path: id, stars: 1)
@@ -788,18 +758,15 @@ private struct TreeRow<Label: View>: View {
 /// The colour dot of a universe. Clicking it opens the colour picker.
 private struct UniverseDot: View {
     let universe: Cosmos.Universe
+    var progress: (done: Int, total: Int)? = nil
     @State private var picking = false
 
     var body: some View {
         let colors = UniverseColors.shared
-        Circle()
-            .fill(colors.color(for: universe.id))
-            .frame(width: 10, height: 10)
-            .shadow(color: colors.color(for: universe.id).opacity(0.6), radius: 4)
-            .frame(width: 16, height: 16)
+        ProgressDot(color: colors.color(for: universe.id), progress: progress)
             .contentShape(Circle())
             .onTapGesture { picking = true }
-            .tip("Цвет вселенной")
+            .tip(progress.map { "Цвет вселенной · задачи: \($0.done) из \($0.total)" } ?? "Цвет вселенной")
             .popover(isPresented: $picking, arrowEdge: .trailing) {
                 ColorGrid(universeID: universe.id) { picking = false }
             }
@@ -835,17 +802,39 @@ private struct ColorGrid: View {
     }
 }
 
-/// Folded sidebar: a universe is just its glowing dot.
+/// A universe's glowing dot; when its notes have tasks, a ring around it fills as they get done.
+private struct ProgressDot: View {
+    let color: Color
+    let progress: (done: Int, total: Int)?
+    var size: CGFloat = 18
+
+    var body: some View {
+        ZStack {
+            if let progress {
+                Circle().stroke(Theme.wash.opacity(0.15), lineWidth: 2.5)
+                Circle().trim(from: 0, to: CGFloat(progress.done) / CGFloat(max(progress.total, 1)))
+                    .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Circle().fill(color).frame(width: size * 0.42, height: size * 0.42)
+            } else {
+                Circle().fill(color).frame(width: size * 0.56, height: size * 0.56)
+                    .shadow(color: color.opacity(0.6), radius: 4)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// Folded sidebar: a universe is just its glowing dot (with its progress ring).
 private struct CompactUniverse: View {
     let universe: Cosmos.Universe
+    var progress: (done: Int, total: Int)? = nil
     let action: () -> Void
 
     var body: some View {
         let color = Theme.color(forUniverse: universe.id)
         Button(action: action) {
-            Circle().fill(color)
-                .frame(width: 12, height: 12)
-                .shadow(color: color.opacity(0.7), radius: 5)
+            ProgressDot(color: color, progress: progress, size: 22)
                 .frame(maxWidth: .infinity, minHeight: 34)
                 .contentShape(Rectangle())
         }

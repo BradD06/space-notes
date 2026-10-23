@@ -167,16 +167,20 @@ final class UniverseColors {
 /// A rounded pane of translucent glass: the scene shows through, blurred and toned down (darker in the dark theme,
 /// lighter in the light one) so text on it stays readable. A diagonal sheen and a rim that glows brighter at the
 /// top-left make it read as a slab of glass. Used only as a background, so it never takes clicks.
-/// `density` scales how solid it is: 1 is the sidebar's glass, more for panes full of text.
+/// Three thicknesses read as depth: the menu is thick glass, cards medium, the dock and hints thin.
+/// `density` scales how solid it is on top of that (more for panes full of text).
 struct GlassPanel: View {
+    enum Thickness: Double { case thin = 0.71, medium = 1, thick = 1.33 }
+
     var radius: CGFloat = Theme.panelRadius
+    var thickness: Thickness = .medium
     var density: Double = 1
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        let alpha = min(0.95, (scheme == .light ? 0.56 : 0.42) * density)
+        let alpha = min(0.95, (scheme == .light ? 0.56 : 0.42) * thickness.rawValue * density)
         Group {
             if reduceTransparency {
                 // Asked for less transparency: nearly solid, no blur.

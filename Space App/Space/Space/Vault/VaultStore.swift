@@ -94,6 +94,7 @@ final class VaultStore {
         fileIDs = [:]
         renamed = [:]
         UniverseColors.shared.load(vault: url.path)
+        Pins.shared.load(vault: url.path)
         VaultProfile.shared.load(root: url)
         BookStats.shared.load(root: url)
         if remember {

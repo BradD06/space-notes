@@ -42,7 +42,7 @@ struct MainView: View {
                 .frame(width: compactSidebar ? 78 : 270)
                 // A floating panel of Liquid Glass from the top of the window, as in Finder on macOS 26:
                 // the window's buttons sit inside it (placed by WindowButtons below).
-                .background(GlassPanel())
+                .background(GlassPanel(thickness: .thick))
                 .padding(.top, Self.sidebarTop)
                 .padding(.bottom, 8)
                 .ignoresSafeArea(.container, edges: .top)
@@ -160,6 +160,7 @@ private struct MainChrome: ViewModifier {
     let map: MapModel
     let workspace: Workspace
     @Binding var pickingAccess: Bool
+    @State private var commands = CommandCenter()
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     private var compactMapButton: Bool { sizeClass == .compact }
@@ -169,14 +170,14 @@ private struct MainChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-        // The star map lives in a floating button in the corner rather than in the menu: always one click (or ⌘G) away.
-        .overlay(alignment: .bottomTrailing) {
-            StarMapButton(selected: vault.selection == .map, compact: compactMapButton) {
-                vault.selection = .map
-                map.go(to: .multiverse)
-            }
-            .padding(compactMapButton ? 16 : 24)
+        // The dock floats at the bottom: the star map, a new star and the inbox, always a click (or ⌘G) away.
+        .overlay(alignment: .bottom) {
+            BottomDock(compact: compactMapButton)
+                .padding(.bottom, compactMapButton ? 10 : 16)
         }
+        // The command bar (⌘K) over everything.
+        .overlay { CommandPalette() }
+        .environment(commands)
         .environment(map)
         .environment(workspace)
         // Whatever gets picked (sidebar, map, links) opens in the focused pane. Deferred one turn so a click
@@ -186,7 +187,7 @@ private struct MainChrome: ViewModifier {
         }
         .onChange(of: vault.generation) { _, _ in
             // Renamed or moved in another app: open tabs follow the file.
-            for (old, new) in vault.lastMoves { workspace.retarget(old: old, new: new) }
+            for (old, new) in vault.lastMoves { workspace.retarget(old: old, new: new); Pins.shared.retarget(old: old, new: new) }
             workspace.prune { vault.cosmos.notes[$0] != nil }
         }
         // The system folder picker is the only way a sandboxed app gets write access to a folder.
